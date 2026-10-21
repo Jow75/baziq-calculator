@@ -1,0 +1,980 @@
+<USER_REQUEST>
+# OmniCalc Phase III
+## Currency Workspace Architecture, Default State, and Professional Drag-and-Drop UX
+
+This phase is a **focused redesign and stabilization of the Currency Converter workspace**.
+
+The current currency converter is functional in many respects, but the UX/state architecture is still incorrect.
+
+I do **not** want another superficial patch.
+
+I want you to first understand the existing currency workspace architecture, identify the actual causes of the problems described below, then implement a coherent solution.
+
+---
+
+# IMPORTANT ENGINEERING WORKFLOW
+
+## Do NOT continuously alternate between coding and physical-device testing.
+
+The current development process is inefficient because implementation and ADB/device testing are being mixed together too frequently.
+
+For this phase, follow this sequence:
+
+### Stage A: Codebase investigation
+
+Before changing code:
+
+1. Inspect the complete currency architecture.
+2. Identify:
+   - currency initialization
+   - default currency definitions
+   - workspace currency persistence
+   - Room entities
+   - Room DAO queries
+   - repository logic
+   - ViewModel state
+   - currency screen state
+   - add/remove behavior
+   - reorder behavior
+   - startup restoration
+   - first-run initialization
+   - migration/default-seeding logic
+3. Trace exactly where the current default currencies are coming from.
+4. Trace exactly what happens when the workspace contains only two currencies.
+5. Trace every place where currencies can be automatically inserted.
+6. Trace every place where `orderIndex` is created, modified, normalized, or persisted.
+7. Trace the drag gesture from touch event → UI state → ViewModel → repository → Room.
+8. Identify why dragging currently feels resistant/non-seamless.
+
+Do not modify code yet.
+
+Produce a concise internal engineering diagnosis before implementation.
+
+---
+
+# 1. ESTABLISH THE CORRECT DEFAULT CURRENCY WORKSPACE
+
+The current default currency workspace is wrong.
+
+At the moment, fresh/opened currency workspaces can contain currencies such as:
+
+- OMR
+- TZS
+- KMF
+- KES
+
+Those currencies were being used during testing.
+
+They were **NOT intended to become the permanent/default startup currency configuration.**
+
+They were test currencies.
+
+## Correct default startup workspace
+
+For a fresh/default OmniCalc currency workspace, the initial five currencies should be:
+
+### Position 1
+**USD — United States Dollar**
+
+### Position 2
+**EUR — Euro**
+
+### Position 3
+**KES — Kenyan Shilling**
+
+### Position 4
+**TZS — Tanzanian Shilling**
+
+### Position 5
+**KMF — Comorian Franc**
+
+This is the intended default ordering.
+
+The user must then be able to customize this workspace.
+
+For example:
+
+USD  
+EUR  
+KES  
+TZS  
+KMF
+
+can become:
+
+KES  
+USD  
+KMF  
+EUR  
+TZS
+
+through normal drag-and-drop.
+
+The default ordering is therefore only the **initial state**, not a permanent forced ordering.
+
+---
+
+# 2. VERY IMPORTANT: SEPARATE DEFAULTS FROM USER WORKSPACE STATE
+
+This is the most important architectural requirement of this phase.
+
+Do not allow the application to repeatedly inject the default currencies into an existing user workspace.
+
+There must be a clear distinction between:
+
+### A. Default workspace configuration
+
+Used when the application has never initialized the currency workspace.
+
+Default:
+
+1. USD
+2. EUR
+3. KES
+4. TZS
+5. KMF
+
+### B. User workspace configuration
+
+Once the user has:
+
+- removed a currency
+- added a currency
+- reordered a currency
+- changed the active input currency
+
+the workspace belongs to the user.
+
+The application must respect that state.
+
+## Example
+
+User starts with:
+
+USD  
+EUR  
+KES  
+TZS  
+KMF
+
+User removes:
+
+EUR  
+TZS  
+KMF
+
+Workspace becomes:
+
+USD  
+KES
+
+The application must NOT subsequently decide:
+
+"Only two currencies remain, therefore I should add TZS or KMF or OMR."
+
+It must remain:
+
+USD  
+KES
+
+until the user explicitly adds another currency.
+
+---
+
+# 3. CRITICAL BUG: CURRENCIES ARE BEING REINSERTED DURING REORDERING
+
+There is currently a serious state-management problem.
+
+When only two currencies remain, reordering them can cause previously removed/default currencies to mysteriously reappear.
+
+For example:
+
+Current workspace:
+
+1. TZS
+2. KMF
+
+User drags:
+
+TZS downward
+
+to produce:
+
+1. KMF
+2. TZS
+
+Instead of simply changing the order, another currency such as KES may suddenly appear.
+
+Another example:
+
+Current workspace:
+
+1. OMR
+2. KES
+
+User drags OMR below KES.
+
+Instead of simply becoming:
+
+1. KES
+2. OMR
+
+another default currency such as TZS may appear.
+
+This is unacceptable.
+
+## Required invariant
+
+### DRAGGING MUST NEVER CHANGE MEMBERSHIP.
+
+A reorder operation may change:
+
+- position
+- orderIndex
+
+It must NEVER change:
+
+- which currencies exist in the workspace
+- the number of currencies
+- the user's selected currencies
+
+unless the user explicitly adds or removes a currency.
+
+Formally:
+
+If the workspace before dragging contains:
+
+`[A, B]`
+
+then after dragging it must contain exactly:
+
+`[B, A]`
+
+and absolutely nothing else.
+
+Not:
+
+`[B, A, C]`
+
+Not:
+
+`[C, B, A]`
+
+Not:
+
+`[B, A, defaultCurrency]`
+
+Only the order may change.
+
+---
+
+# 4. MINIMUM TWO-CURRENCY RULE
+
+The existing behavior that prevents the user from removing the final currencies is good.
+
+Maintain the rule that the currency workspace must contain at least two currencies.
+
+Therefore:
+
+If there are two currencies:
+
+[A, B]
+
+the user can:
+
+- reorder A/B
+- edit them
+- replace one through the normal currency selection workflow
+
+but cannot remove both.
+
+If the user taps X on A:
+
+workspace becomes:
+
+[B, another existing currency]
+
+only if another currency already exists.
+
+Do NOT automatically insert a default currency merely because the workspace reaches two currencies.
+
+The minimum-two rule is a **minimum membership constraint**, not a **default-currency injection trigger**.
+
+This distinction is critical.
+
+---
+
+# 5. DEFAULTS SHOULD ONLY BE SEEDED WHEN APPROPRIATE
+
+Determine the correct first-run initialization logic.
+
+The default five currencies:
+
+USD, EUR, KES, TZS, KMF
+
+should be seeded only when the currency workspace has never been initialized.
+
+Once the workspace has been initialized, do not repeatedly seed defaults.
+
+If the workspace is empty due to a genuine data reset or fresh installation, initialize the five defaults.
+
+If the user has intentionally removed currencies, respect the user's workspace.
+
+Do not use conditions such as:
+
+- "if count < 5"
+- "if count == 2"
+- "if currency X is missing"
+- "if order changes"
+
+to re-add default currencies.
+
+Those conditions would incorrectly modify user state.
+
+---
+
+# 6. DEFAULT CURRENCY CONFIGURATION SHOULD BE CENTRALIZED
+
+There should be exactly one authoritative definition of the default currency workspace.
+
+Do not scatter the default list throughout:
+
+- CurrencyScreen
+- CurrencyViewModel
+- Repository
+- DAO
+- initialization callbacks
+- drag handlers
+- add/remove handlers
+- lifecycle callbacks
+
+Create or use one clear source of truth.
+
+Conceptually:
+
+`DEFAULT_WORKSPACE_CURRENCIES = [USD, EUR, KES, TZS, KMF]`
+
+The exact implementation is up to you.
+
+The important requirement is:
+
+### One source of truth.
+
+No duplicated default lists.
+
+No hidden fallback insertion.
+
+No screen-level logic that silently restores defaults.
+
+---
+
+# 7. DRAG-AND-DROP UX MUST BE REDESIGNED FOR SMOOTHNESS
+
+The current drag-and-drop technically works, but it does **not feel seamless**.
+
+The currency card feels like it struggles when being moved.
+
+This needs to be treated as a professional mobile UX issue, not simply a functional test.
+
+The goal is:
+
+> Press → lift the currency row naturally → drag smoothly → neighboring rows move predictably → release → row settles into its new position.
+
+It should feel like moving a physical list item.
+
+---
+
+# 8. DRAG INTERACTION REQUIREMENTS
+
+Use a proper Android/Jetpack Compose reorder interaction.
+
+The implementation should:
+
+1. Recognize a deliberate long press or drag.
+2. Capture the correct currency row.
+3. Lift the row visually.
+4. Allow continuous vertical movement.
+5. Track the finger smoothly.
+6. Move neighboring rows out of the way dynamically.
+7. Avoid jitter.
+8. Avoid accidental clicks.
+9. Avoid accidental X/remove actions.
+10. Commit the final position when released.
+
+The user should NOT have to fight the UI.
+
+---
+
+# 9. DO NOT MAKE THE DRAG HANDLE TOO SMALL OR TOO SENSITIVE
+
+The drag interaction should be easy on a touchscreen.
+
+The current implementation has a drag handle and also supports pressing the currency header.
+
+Review whether the current gesture areas are causing competition between:
+
+- tap
+- long press
+- scrolling
+- drag
+- currency selection
+- remove button
+
+Do not make the interaction ambiguous.
+
+The X/remove button must remain completely independent.
+
+Dragging near the X must never accidentally remove the currency.
+
+---
+
+# 10. DRAG VISUAL FEEDBACK
+
+While dragging:
+
+- The selected row should visually appear elevated.
+- It should clearly be the item being moved.
+- Other rows should smoothly reposition.
+- The row should follow the user's finger naturally.
+- There should be no sudden jumps.
+- There should be no visible "fight" between scrolling and dragging.
+- There should be no frame-by-frame snapping.
+- The final placement should animate naturally.
+
+The user should immediately understand:
+
+**"I am holding this currency and moving it."**
+
+---
+
+# 11. DO NOT USE A FAKE DRAG IMPLEMENTATION
+
+Do not implement dragging merely by:
+
+- changing an integer after a gesture
+- waiting until release
+- moving the row only after the gesture finishes
+- repeatedly rebuilding the entire list
+- adding arbitrary delays
+- using excessive animation duration to hide movement problems
+
+The list should respond continuously during the drag.
+
+---
+
+# 12. ORDERING DATA MODEL
+
+Review the current `orderIndex` architecture.
+
+The invariant should be:
+
+For workspace:
+
+[A, B, C, D]
+
+the persisted order should be:
+
+A → 0  
+B → 1  
+C → 2  
+D → 3
+
+After moving D to the top:
+
+D → 0  
+A → 1  
+B → 2  
+C → 3
+
+There must be no duplicate order indices.
+
+There must be no gaps unless the architecture intentionally normalizes them.
+
+After every successful reorder:
+
+1. UI state changes immediately.
+2. New order is persisted.
+3. Room contains the same membership.
+4. Room contains the same order.
+5. Restart restores exactly that order.
+
+---
+
+# 13. REORDER OPERATION MUST BE ATOMIC
+
+The reorder operation should be treated as a transaction/state transition.
+
+Given:
+
+`[USD, EUR, KES, TZS, KMF]`
+
+moving KMF to the first position should produce exactly:
+
+`[KMF, USD, EUR, KES, TZS]`
+
+in both:
+
+- UI state
+- persisted Room state
+
+There should be no intermediate state where currencies disappear or default currencies are inserted.
+
+If necessary, perform the persistence update inside a Room transaction.
+
+---
+
+# 14. ADDING A NEW CURRENCY
+
+Adding a currency should be explicit.
+
+For example, if the user has:
+
+USD  
+EUR  
+KES  
+TZS  
+KMF
+
+and explicitly adds:
+
+GBP
+
+then GBP may be appended or inserted according to the existing product design.
+
+But the application must NOT add GBP or any other currency merely because the user reordered the list.
+
+---
+
+# 15. REMOVING A CURRENCY
+
+Removing a currency should also be explicit.
+
+When the user taps X:
+
+- remove exactly that currency
+- preserve the order of the remaining currencies
+- renumber/normalize order indices if necessary
+- persist the new workspace
+- do not automatically insert a replacement
+
+Example:
+
+Before:
+
+USD  
+EUR  
+KES  
+TZS  
+KMF
+
+Remove EUR.
+
+Correct:
+
+USD  
+KES  
+TZS  
+KMF
+
+Incorrect:
+
+USD  
+KES  
+TZS  
+KMF  
+OMR
+
+---
+
+# 16. STARTUP BEHAVIOR
+
+Perform a clean-install test.
+
+On a genuinely fresh installation with no previous workspace data:
+
+Currency workspace should open as:
+
+1. USD
+2. EUR
+3. KES
+4. TZS
+5. KMF
+
+Then test:
+
+- remove currencies
+- reorder currencies
+- close application
+- force-stop application
+- reopen application
+- restart device if practical
+
+The customized workspace must remain exactly as the user left it.
+
+---
+
+# 17. IMPORTANT: DO NOT CONFUSE TEST DATA WITH PRODUCT DEFAULTS
+
+Previous development testing used currencies such as:
+
+- OMR
+- TZS
+- KMF
+- KES
+
+Those were used for physical testing.
+
+They must not become product defaults simply because they appeared in the developer's test workspace.
+
+Test fixtures and production/default initialization must be clearly separated.
+
+Do not use physical-test data as application startup defaults.
+
+---
+
+# 18. TEST THE ENTIRE CURRENCY WORKSPACE AS A STATE MACHINE
+
+Add or update automated tests covering these transitions.
+
+### Test A: Fresh initialization
+
+Expected:
+
+`[] → [USD, EUR, KES, TZS, KMF]`
+
+### Test B: Reopen existing workspace
+
+Expected:
+
+`[USD, EUR, KES, TZS, KMF] → same exact list`
+
+No reseeding.
+
+### Test C: Remove
+
+`[USD, EUR, KES, TZS, KMF]`
+
+Remove EUR:
+
+`[USD, KES, TZS, KMF]`
+
+No replacement.
+
+### Test D: Reorder two currencies
+
+`[KES, KMF]`
+
+Move KES downward:
+
+`[KMF, KES]`
+
+No third currency.
+
+### Test E: Reorder two currencies repeatedly
+
+Start:
+
+`[KES, KMF]`
+
+Perform multiple reversals:
+
+`[KMF, KES] → [KES, KMF] → [KMF, KES]`
+
+Membership must remain exactly two currencies throughout.
+
+### Test F: Reorder with five currencies
+
+`[USD, EUR, KES, TZS, KMF]`
+
+Move KMF to top:
+
+`[KMF, USD, EUR, KES, TZS]`
+
+### Test G: Remove then reorder
+
+Remove EUR:
+
+`[USD, KES, TZS, KMF]`
+
+Then reorder:
+
+`[KMF, USD, TZS, KES]`
+
+No currency may reappear.
+
+### Test H: Restart persistence
+
+Persist:
+
+`[KMF, USD, TZS, KES]`
+
+Restart/reload.
+
+Expected:
+
+`[KMF, USD, TZS, KES]`
+
+Exactly.
+
+### Test I: Add after custom reorder
+
+Start:
+
+`[KMF, USD, KES]`
+
+Add GBP.
+
+Expected:
+
+`[KMF, USD, KES, GBP]`
+
+or the explicitly defined insertion behavior.
+
+The existing custom order must not be destroyed.
+
+---
+
+# 19. DRAG UX TESTING MUST BE PHYSICAL
+
+Automated tests cannot adequately determine whether the drag interaction feels smooth.
+
+After implementation, physically test on:
+
+**Tecno Spark 10 Pro, Android 13, API 33.**
+
+Test:
+
+### Slow drag
+
+Press KMF and slowly drag it from bottom to top.
+
+Expected:
+
+Smooth continuous movement.
+
+### Fast drag
+
+Press KMF and rapidly move it upward.
+
+Expected:
+
+No missed movement, no jump, no accidental click.
+
+### Repeated drag
+
+Move the same currency:
+
+top → bottom → middle → top.
+
+Expected:
+
+Stable every time.
+
+### Two-currency drag
+
+With exactly two currencies:
+
+[A, B]
+
+drag A below B.
+
+Expected:
+
+[B, A]
+
+and absolutely no third currency appears.
+
+### Five-currency drag
+
+Drag:
+
+KMF → top  
+KES → bottom  
+USD → middle  
+EUR → bottom
+
+Verify membership and ordering after every operation.
+
+---
+
+# 20. VISUAL/UX ACCEPTANCE STANDARD
+
+Do not merely report:
+
+> "Drag works."
+
+That is insufficient.
+
+The question is:
+
+> Does the drag interaction feel natural, predictable, responsive, and effortless on a real touchscreen?
+
+If the answer is no, continue improving the interaction.
+
+Do not declare the feature complete merely because the automated test passes.
+
+---
+
+# 21. IMPORTANT BUILD/TEST WORKFLOW
+
+Follow this workflow for the rest of this phase.
+
+## STEP 1 — INVESTIGATE
+
+Inspect the architecture and identify the actual causes.
+
+## STEP 2 — IMPLEMENT
+
+Make all required code changes:
+
+- default workspace
+- workspace initialization
+- state separation
+- reorder logic
+- Room persistence
+- minimum-two rule
+- drag UX
+- automated tests
+
+## STEP 3 — STATIC REVIEW
+
+Before building the APK, inspect the changed code again.
+
+Specifically search for:
+
+- hidden default insertion
+- duplicate initialization
+- fallback currency insertion
+- reorder functions that modify membership
+- lifecycle-triggered workspace mutations
+- duplicate order indices
+- race conditions
+- unnecessary recomposition
+- gesture conflicts
+- accidental X/remove interaction
+
+## STEP 4 — AUTOMATED TESTS
+
+Run the complete relevant test suite.
+
+Do not delete or weaken existing tests to make the suite pass.
+
+Report:
+
+- previous test count
+- new test count
+- passed
+- failed
+- skipped
+
+## STEP 5 — BUILD ONE COHERENT DEBUG APK
+
+Only after implementation and automated validation are complete:
+
+Build the debug APK once.
+
+Do not repeatedly rebuild and reinstall for every tiny adjustment.
+
+## STEP 6 — INSTALL ON PHYSICAL DEVICE
+
+Only now use ADB to install the new APK on the Tecno Spark 10 Pro.
+
+## STEP 7 — PHYSICAL VALIDATION
+
+Perform the complete currency workflow:
+
+1. Fresh/default workspace
+2. Verify USD/EUR/KES/TZS/KMF
+3. Remove currencies
+4. Leave exactly two
+5. Reorder the two
+6. Confirm no currency mysteriously reappears
+7. Add currencies
+8. Reorder five or more
+9. Close application
+10. Reopen
+11. Force-stop
+12. Reopen
+13. Verify order persists
+14. Test rapid and slow dragging
+15. Test X/remove
+16. Test currency editing
+17. Test number formatting
+
+## STEP 8 — REPORT
+
+Only after all of this should you provide the engineering report.
+
+---
+
+# 22. DO NOT MAKE UNRELATED CHANGES
+
+This phase is specifically about:
+
+### Currency workspace architecture
+### Currency default initialization
+### Currency membership integrity
+### Currency reorder behavior
+### Currency drag UX
+### Currency persistence
+### Currency automated tests
+
+Do not modify unrelated calculator features.
+
+Do not change the currency rate provider architecture unless the investigation proves that it is directly responsible for this bug.
+
+Do not redesign the entire application.
+
+Do not introduce unnecessary dependencies.
+
+---
+
+# FINAL ACCEPTANCE CRITERIA
+
+Phase III is complete only when:
+
+- [ ] Default fresh workspace is USD, EUR, KES, TZS, KMF
+- [ ] Default currencies are seeded only on genuine first initialization
+- [ ] Test currencies such as OMR are not silently inserted
+- [ ] User removal is respected
+- [ ] Minimum two currencies is enforced without automatic replacement
+- [ ] Reordering never changes currency membership
+- [ ] Two currencies can be reordered without a third appearing
+- [ ] Five or more currencies can be reordered reliably
+- [ ] Dragging feels smooth and responsive on the Tecno touchscreen
+- [ ] X/remove remains independent from drag
+- [ ] Custom order persists across restart
+- [ ] Room order and UI order remain identical
+- [ ] No duplicate order indices
+- [ ] No hidden default injection remains
+- [ ] Automated tests pass
+- [ ] Existing tests remain intact
+- [ ] One coherent debug APK is built after implementation
+- [ ] Physical testing occurs only after the implementation and automated testing stages
+- [ ] Physical device verification passes
+- [ ] No unrelated features are changed
+
+## Final instruction
+
+Do not rush to code.
+
+First understand the state architecture.
+
+The central principle for this phase is:
+
+> **The user's currency workspace is persistent user state. Reordering changes position only. Adding changes membership only when explicitly requested. Removing changes membership only when explicitly requested. Default currencies are seeded only during genuine first initialization.**
+
+If the current implementation violates that principle, fix the architecture rather than adding another conditional patch.
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-10-04T15:09:42+03:00.
+
+The user's current state is as follows:
+Active Document: c:\Users\Admin\Music\CALCULATOR AND CONVERSION PLATFORM FOR ANDROID\app\build.gradle.kts (LANGUAGE_UNSPECIFIED)
+Cursor is on line: 1
+Other open documents:
+- c:\Users\Admin\Music\CALCULATOR AND CONVERSION PLATFORM FOR ANDROID\app\build.gradle.kts (LANGUAGE_UNSPECIFIED)
+</ADDITIONAL_METADATA>
+<USER_SETTINGS_CHANGE>
+The user changed setting `Model Selection` from Gemini 3.8 Flash (High) to Claude Opus 4.6 (Thinking). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.
+</USER_SETTINGS_CHANGE>
