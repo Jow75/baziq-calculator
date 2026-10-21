@@ -26,7 +26,17 @@ data class UserPreferences(
     val soundEnabled: Boolean = false
 )
 
-class UserPreferencesRepository(private val context: Context) {
+interface PreferencesRepository {
+    val userPreferencesFlow: Flow<UserPreferences>
+    suspend fun setTheme(theme: AppTheme)
+    suspend fun setDecimalPrecision(precision: Int)
+    suspend fun setGrouping(enabled: Boolean)
+    suspend fun setHapticFeedback(enabled: Boolean)
+    suspend fun setAngleMode(mode: AngleMode)
+    suspend fun setDefaultCurrency(currencyCode: String)
+}
+
+class UserPreferencesRepository(private val context: Context) : PreferencesRepository {
     private object Keys {
         val THEME = stringPreferencesKey("app_theme")
         val DECIMAL_PRECISION = intPreferencesKey("decimal_precision")
@@ -37,7 +47,7 @@ class UserPreferencesRepository(private val context: Context) {
         val SOUND_ENABLED = booleanPreferencesKey("sound_enabled")
     }
 
-    val userPreferencesFlow: Flow<UserPreferences> = context.dataStore.data.map { prefs ->
+    override val userPreferencesFlow: Flow<UserPreferences> = context.dataStore.data.map { prefs ->
         val themeStr = prefs[Keys.THEME] ?: AppTheme.SYSTEM.name
         val theme = try { AppTheme.valueOf(themeStr) } catch (_: Exception) { AppTheme.SYSTEM }
 
@@ -55,27 +65,27 @@ class UserPreferencesRepository(private val context: Context) {
         )
     }
 
-    suspend fun setTheme(theme: AppTheme) {
+    override suspend fun setTheme(theme: AppTheme) {
         context.dataStore.edit { it[Keys.THEME] = theme.name }
     }
 
-    suspend fun setDecimalPrecision(precision: Int) {
+    override suspend fun setDecimalPrecision(precision: Int) {
         context.dataStore.edit { it[Keys.DECIMAL_PRECISION] = precision }
     }
 
-    suspend fun setGrouping(enabled: Boolean) {
+    override suspend fun setGrouping(enabled: Boolean) {
         context.dataStore.edit { it[Keys.USE_GROUPING] = enabled }
     }
 
-    suspend fun setHapticFeedback(enabled: Boolean) {
+    override suspend fun setHapticFeedback(enabled: Boolean) {
         context.dataStore.edit { it[Keys.HAPTIC_FEEDBACK] = enabled }
     }
 
-    suspend fun setAngleMode(mode: AngleMode) {
+    override suspend fun setAngleMode(mode: AngleMode) {
         context.dataStore.edit { it[Keys.ANGLE_MODE] = mode.name }
     }
 
-    suspend fun setDefaultCurrency(currencyCode: String) {
+    override suspend fun setDefaultCurrency(currencyCode: String) {
         context.dataStore.edit { it[Keys.DEFAULT_CURRENCY] = currencyCode }
     }
 }

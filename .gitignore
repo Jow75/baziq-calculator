@@ -12,3 +12,9 @@ captures
 .cxx
 *.apk
 *.aab
+*.log
+/*_dump*.xml
+/*.xml
+/*.png
+/*.db
+/extracted_db/

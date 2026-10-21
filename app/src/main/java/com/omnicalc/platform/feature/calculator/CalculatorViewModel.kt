@@ -11,6 +11,7 @@ import com.omnicalc.platform.core.math.AngleMode
 import com.omnicalc.platform.core.math.BigDecimalMath
 import com.omnicalc.platform.core.math.EvalResult
 import com.omnicalc.platform.core.math.ExpressionEvaluator
+import com.omnicalc.platform.core.preferences.PreferencesRepository
 import com.omnicalc.platform.core.preferences.UserPreferencesRepository
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -29,12 +30,12 @@ data class CalculatorUiState(
 
 class CalculatorViewModel(
     private val historyDaoProvider: () -> HistoryDao,
-    private val preferencesRepository: UserPreferencesRepository
+    private val preferencesRepository: PreferencesRepository
 ) : ViewModel() {
 
     constructor(
         historyDao: HistoryDao,
-        preferencesRepository: UserPreferencesRepository
+        preferencesRepository: PreferencesRepository
     ) : this({ historyDao }, preferencesRepository)
 
     private val historyDao: HistoryDao by lazy { historyDaoProvider() }
@@ -60,9 +61,22 @@ class CalculatorViewModel(
     }
 
     fun onDigit(digit: String) {
-        val tStart = SystemClock.elapsedRealtime()
+        val tStart = try { SystemClock.elapsedRealtime() } catch (_: Throwable) { 0L }
         _uiState.update { current ->
-            val newExpr = if (current.expression == "0" && digit != ".") digit else current.expression + digit
+            val expr = current.expression
+            val newExpr = if (digit == ".") {
+                val lastToken = expr.split(' ').lastOrNull() ?: ""
+                if (lastToken.contains('.')) {
+                    return@update current
+                }
+                if (expr.isEmpty() || expr.endsWith(" ") || expr == "-") {
+                    expr + "0."
+                } else {
+                    expr + "."
+                }
+            } else {
+                if (expr == "0") digit else expr + digit
+            }
             val preview = calculatePreview(newExpr)
             current.copy(
                 expression = newExpr,
@@ -70,30 +84,46 @@ class CalculatorViewModel(
                 errorMessage = preview.second
             )
         }
-        Choreographer.getInstance().postFrameCallback {
-            val tFrame = SystemClock.elapsedRealtime()
-            Log.i("PERF_OMNICALC", "KEYPAD_METRIC: digit '$digit' rendered in ${tFrame - tStart} ms")
+        try {
+            Choreographer.getInstance().postFrameCallback {
+                val tFrame = SystemClock.elapsedRealtime()
+                Log.i("PERF_OMNICALC", "KEYPAD_METRIC: digit '$digit' rendered in ${tFrame - tStart} ms")
+            }
+        } catch (_: Throwable) {
+            // Guard for host JVM test runner
         }
     }
 
     fun onOperator(op: String) {
-        val tStart = SystemClock.elapsedRealtime()
+        val tStart = try { SystemClock.elapsedRealtime() } catch (_: Throwable) { 0L }
         _uiState.update { current ->
-            if (current.expression.isEmpty()) {
+            val expr = current.expression.trimEnd()
+            if (expr.isEmpty()) {
                 if (op == "−" || op == "-") {
                     return@update current.copy(expression = "-")
                 }
                 return@update current
             }
-            val newExpr = current.expression + " $op "
+            // Check if current expression already ends with an operator: e.g. "5 +", "5 ×", "5 ÷", "5 −"
+            val operatorEndRegex = Regex("""\s([+\-−×*÷/])\s?$""")
+            val newExpr = if (operatorEndRegex.containsMatchIn(expr)) {
+                expr.replace(operatorEndRegex, " $op ")
+            } else if (expr == "-") {
+                if (op == "−" || op == "-") "-" else ""
+            } else {
+                "$expr $op "
+            }
             current.copy(expression = newExpr, errorMessage = null)
         }
-        Choreographer.getInstance().postFrameCallback {
-            val tFrame = SystemClock.elapsedRealtime()
-            Log.i("PERF_OMNICALC", "KEYPAD_METRIC: operator '$op' rendered in ${tFrame - tStart} ms")
+        try {
+            Choreographer.getInstance().postFrameCallback {
+                val tFrame = SystemClock.elapsedRealtime()
+                Log.i("PERF_OMNICALC", "KEYPAD_METRIC: operator '$op' rendered in ${tFrame - tStart} ms")
+            }
+        } catch (_: Throwable) {
+            // Guard for host JVM test runner
         }
     }
-
 
     fun onScientificFunction(func: String) {
         _uiState.update { current ->
@@ -104,14 +134,18 @@ class CalculatorViewModel(
 
     fun onParentheses() {
         _uiState.update { current ->
-            val openCount = current.expression.count { it == '(' }
-            val closeCount = current.expression.count { it == ')' }
-            val charToAdd = if (openCount > closeCount && current.expression.lastOrNull()?.isDigit() == true) {
+            val expr = current.expression
+            val openCount = expr.count { it == '(' }
+            val closeCount = expr.count { it == ')' }
+            val lastChar = expr.lastOrNull()
+            val charToAdd = if (openCount > closeCount && (lastChar?.isDigit() == true || lastChar == ')' || lastChar == '%')) {
                 ")"
-            } else {
+            } else if (expr.isEmpty() || expr.endsWith(" ") || lastChar == '(') {
                 "("
+            } else {
+                " × ("
             }
-            val newExpr = current.expression + charToAdd
+            val newExpr = expr + charToAdd
             val preview = calculatePreview(newExpr)
             current.copy(
                 expression = newExpr,
@@ -123,8 +157,9 @@ class CalculatorViewModel(
 
     fun onPercentage() {
         _uiState.update { current ->
-            if (current.expression.isEmpty()) return@update current
-            val newExpr = current.expression + "%"
+            val expr = current.expression
+            if (expr.isEmpty() || expr.endsWith("%") || expr.endsWith(" ") || expr.endsWith("-")) return@update current
+            val newExpr = expr + "%"
             val preview = calculatePreview(newExpr)
             current.copy(
                 expression = newExpr,
@@ -136,11 +171,22 @@ class CalculatorViewModel(
 
     fun onSignChange() {
         _uiState.update { current ->
-            if (current.expression.isEmpty()) return@update current
-            val newExpr = if (current.expression.startsWith("-")) {
-                current.expression.substring(1)
-            } else {
-                "-(" + current.expression + ")"
+            val expr = current.expression.trim()
+            if (expr.isEmpty() || expr == "0") return@update current
+
+            val newExpr = when {
+                expr.startsWith("-(") && expr.endsWith(")") -> {
+                    expr.removePrefix("-(").removeSuffix(")")
+                }
+                expr.startsWith("-") && !expr.drop(1).contains(' ') -> {
+                    expr.removePrefix("-")
+                }
+                !expr.contains(' ') && !expr.startsWith("-") -> {
+                    "-$expr"
+                }
+                else -> {
+                    "-($expr)"
+                }
             }
             val preview = calculatePreview(newExpr)
             current.copy(
