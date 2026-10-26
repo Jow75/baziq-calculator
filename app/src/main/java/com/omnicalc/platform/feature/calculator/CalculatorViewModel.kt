@@ -1,8 +1,5 @@
 package com.omnicalc.platform.feature.calculator
 
-import android.os.SystemClock
-import android.util.Log
-import android.view.Choreographer
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.omnicalc.platform.core.database.daos.HistoryDao
@@ -61,7 +58,6 @@ class CalculatorViewModel(
     }
 
     fun onDigit(digit: String) {
-        val tStart = try { SystemClock.elapsedRealtime() } catch (_: Throwable) { 0L }
         _uiState.update { current ->
             val expr = current.expression
             val newExpr = if (digit == ".") {
@@ -84,18 +80,9 @@ class CalculatorViewModel(
                 errorMessage = preview.second
             )
         }
-        try {
-            Choreographer.getInstance().postFrameCallback {
-                val tFrame = SystemClock.elapsedRealtime()
-                Log.i("PERF_OMNICALC", "KEYPAD_METRIC: digit '$digit' rendered in ${tFrame - tStart} ms")
-            }
-        } catch (_: Throwable) {
-            // Guard for host JVM test runner
-        }
     }
 
     fun onOperator(op: String) {
-        val tStart = try { SystemClock.elapsedRealtime() } catch (_: Throwable) { 0L }
         _uiState.update { current ->
             val expr = current.expression.trimEnd()
             if (expr.isEmpty()) {
@@ -114,14 +101,6 @@ class CalculatorViewModel(
                 "$expr $op "
             }
             current.copy(expression = newExpr, errorMessage = null)
-        }
-        try {
-            Choreographer.getInstance().postFrameCallback {
-                val tFrame = SystemClock.elapsedRealtime()
-                Log.i("PERF_OMNICALC", "KEYPAD_METRIC: operator '$op' rendered in ${tFrame - tStart} ms")
-            }
-        } catch (_: Throwable) {
-            // Guard for host JVM test runner
         }
     }
 
@@ -204,6 +183,9 @@ class CalculatorViewModel(
             if (newExpr.isNotEmpty()) {
                 newExpr = newExpr.dropLast(1).trimEnd()
             }
+            // Back to a binary operator ("7 + 7" -> "7 + "): keep the space onOperator wrote, so
+            // the next digit gives "7 + 3" rather than "7 +3", and "." gives "7 + 0."
+            if (newExpr.length > 1 && newExpr.last() in BINARY_OPERATORS) newExpr += " "
             val preview = if (newExpr.isNotEmpty()) calculatePreview(newExpr) else Pair("", null)
             current.copy(
                 expression = newExpr,
@@ -294,20 +276,22 @@ class CalculatorViewModel(
             "MC" -> _uiState.update { it.copy(memory = BigDecimal.ZERO) }
             "MR" -> {
                 if (current.memory.compareTo(BigDecimal.ZERO) != 0) {
-                    val memStr = current.memory.stripTrailingZeros().toPlainString()
-                    onDigit(memStr)
+                    // Same bounded formatting as results: a plain string of 1E+999999999 exhausts the heap
+                    onDigit(evaluator.formatResult(current.memory))
                 }
             }
+            // Bounded precision: an unbounded add aligns scales exactly, so 0 + 1E+999999999
+            // would build a billion-digit integer and exhaust the heap.
             "M+" -> {
                 val eval = evaluator.evaluate(current.expression)
                 if (eval is EvalResult.Success) {
-                    _uiState.update { it.copy(memory = it.memory.add(eval.value)) }
+                    _uiState.update { it.copy(memory = it.memory.add(eval.value, BigDecimalMath.DEFAULT_MATH_CONTEXT)) }
                 }
             }
             "M-" -> {
                 val eval = evaluator.evaluate(current.expression)
                 if (eval is EvalResult.Success) {
-                    _uiState.update { it.copy(memory = it.memory.subtract(eval.value)) }
+                    _uiState.update { it.copy(memory = it.memory.subtract(eval.value, BigDecimalMath.DEFAULT_MATH_CONTEXT)) }
                 }
             }
         }
@@ -335,5 +319,10 @@ class CalculatorViewModel(
             return Pair(quick.primaryResult, null)
         }
         return Pair("", null)
+    }
+
+    private companion object {
+        /** Operators that onOperator writes between spaces, e.g. "7 + ". */
+        val BINARY_OPERATORS = setOf('+', '−', '×', '÷', '^', '-', '*', '/')
     }
 }

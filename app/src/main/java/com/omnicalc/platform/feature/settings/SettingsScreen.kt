@@ -1,6 +1,21 @@
 package com.omnicalc.platform.feature.settings
 
+import com.omnicalc.platform.BuildConfig
+import android.Manifest
+import android.content.pm.PackageManager
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import com.omnicalc.platform.core.preferences.LocalCurrencySettings
+import com.omnicalc.platform.core.backup.BackupCodec
+import com.omnicalc.platform.core.backup.BackupFile
+import com.omnicalc.platform.core.backup.BackupRepository
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,6 +40,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun SettingsScreen(
     preferencesRepository: UserPreferencesRepository,
+    backupRepository: BackupRepository,
     onNavigateBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -106,15 +122,58 @@ fun SettingsScreen(
             Column {
                 Text("Default Decimal Precision", fontWeight = FontWeight.Medium)
                 Spacer(modifier = Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Wraps whole chips onto a second line on narrow screens; in a Row the last one
+                // was squeezed until its label broke inside the word ("8 plac/es")
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(2, 4, 6, 8).forEach { prec ->
                         FilterChip(
                             selected = prefs.decimalPrecision == prec,
                             onClick = { scope.launch { preferencesRepository.setDecimalPrecision(prec) } },
-                            label = { Text("$prec places") }
+                            label = { Text("$prec places", maxLines = 1, softWrap = false) }
                         )
                     }
                 }
+            }
+
+            Divider()
+
+            // Currency: base currency from the current country
+            Text("Currency", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            val localSettings by preferencesRepository.localCurrencySettingsFlow.collectAsState(initial = LocalCurrencySettings())
+            val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                scope.launch {
+                    preferencesRepository.setLocationPromptAnswered()
+                    if (granted) preferencesRepository.setAutoLocalCurrency(true)
+                }
+                if (!granted) {
+                    Toast.makeText(context, "Location not allowed. Choose currencies manually, or allow location in Android settings.", Toast.LENGTH_LONG).show()
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Use my current country's currency", fontWeight = FontWeight.Medium)
+                    Text(
+                        "When you open the converter in a new country, its currency becomes your base currency. Uses approximate location; only the country is kept.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = localSettings.autoLocalCurrency,
+                    onCheckedChange = { checked ->
+                        val granted = listOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
+                            .any { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
+                        if (checked && !granted) {
+                            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+                        } else {
+                            scope.launch { preferencesRepository.setAutoLocalCurrency(checked) }
+                        }
+                    }
+                )
             }
 
             Divider()
@@ -127,13 +186,17 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     Text(
-                        text = "• 100% Offline-First Architecture\n• No account or registration required\n• Calculations, history, and preferences never leave your phone\n• Zero third-party behavioral analytics or invasive tracking",
+                        text = "• Calculations work offline\n• No account or registration required\n• History and settings are stored on your phone. They leave it only in a backup file you export, or in Android's own device backup if you have turned that on\n• No analytics or advertising trackers\n• Exchange rates are downloaded from public rate services\n• Local currency: when you allow it, your approximate position is passed to the phone's geocoding service to find the country; only the country code is saved",
                         style = MaterialTheme.typography.bodyMedium,
                         lineHeight = 22.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
+
+            Divider()
+
+            BackupSection(backupRepository)
 
             Divider()
 
@@ -161,13 +224,14 @@ fun SettingsScreen(
             Divider()
 
             // About & Data Governance
-            Text("About OmniCalc", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("About Baziq Calculator", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Card(
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("OmniCalc Platform v1.0.0", fontWeight = FontWeight.Bold)
+                    Text("Baziq Calculator v${BuildConfig.VERSION_NAME}", fontWeight = FontWeight.Bold)
+                    Text("by Baziq Hue", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                     Text("High-Precision Scientific, Financial, and Multi-Conversion Suite for Android.", style = MaterialTheme.typography.bodySmall)
                     Spacer(modifier = Modifier.height(4.dp))
                     Text("Data Standards & Citations:", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelMedium)
@@ -175,5 +239,98 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * Saves the user's data (history, currency list, custom rates, settings) to a file they choose,
+ * and merges such a file back in. Used to move data to a new installation; nothing is deleted.
+ */
+@Composable
+private fun BackupSection(backupRepository: BackupRepository) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var status by remember { mutableStateOf<String?>(null) }
+    var pendingImport by remember { mutableStateOf<BackupFile?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            status = try {
+                val backup = backupRepository.export()
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(BackupCodec.encode(backup).toByteArray()) }
+                        ?: throw java.io.IOException("The file could not be opened.")
+                }
+                "Backup saved: ${backup.history.size} history entries, ${backup.currencies.size} currencies, " +
+                    "${backup.customRates.size} custom rates."
+            } catch (e: Exception) {
+                "Backup failed: ${e.message}"
+            }
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            try {
+                // Read with a size limit and parse off the main thread
+                pendingImport = withContext(Dispatchers.IO) {
+                    val text = context.contentResolver.openInputStream(uri)?.use { BackupCodec.readText(it) }
+                        ?: throw java.io.IOException("The file could not be opened.")
+                    BackupCodec.decode(text)
+                }
+            } catch (e: Exception) {
+                status = "Import failed: ${e.message}"
+            }
+        }
+    }
+
+    Text("Backup & Restore", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    Text(
+        "Save your history, currency list, custom rates and settings to a file, for example before moving to a new phone or reinstalling. The file stays where you save it.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = {
+            val day = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(Date())
+            exportLauncher.launch("baziq-calculator-backup-$day.json")
+        }) { Text("Export backup") }
+        OutlinedButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }) {
+            Text("Import backup")
+        }
+    }
+    status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+
+    pendingImport?.let { backup ->
+        val made = SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault()).format(Date(backup.exportedAtMs))
+        AlertDialog(
+            onDismissRequest = { pendingImport = null },
+            title = { Text("Import this backup?") },
+            text = {
+                Text(
+                    "Made on $made with version ${backup.appVersion}: ${backup.history.size} history entries, " +
+                        "${backup.currencies.size} currencies, ${backup.customRates.size} custom rates and your settings.\n\n" +
+                        "History entries you already have are not duplicated. The backup's currency list and settings " +
+                        "replace the current ones; nothing else is deleted."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingImport = null
+                    scope.launch {
+                        status = try {
+                            val result = backupRepository.import(backup)
+                            "Backup imported: ${result.historyAdded} history entries added " +
+                                "(${result.historyAlreadyPresent} already present), ${result.currencies} currencies."
+                        } catch (e: Exception) {
+                            "Import failed: ${e.message}"
+                        }
+                    }
+                }) { Text("Import") }
+            },
+            dismissButton = { TextButton(onClick = { pendingImport = null }) { Text("Cancel") } }
+        )
     }
 }

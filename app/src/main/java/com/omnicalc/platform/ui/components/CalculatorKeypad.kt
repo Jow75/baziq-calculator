@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.omnicalc.platform.core.math.AngleMode
@@ -134,6 +135,42 @@ fun CalculatorButton(
     }
 }
 
+/** Content description of the backspace key; it deletes one character, it never clears all. */
+const val BACKSPACE_KEY_DESCRIPTION = "Backspace"
+
+/**
+ * Backspace key: a filled, tinted 64 x 48 dp key with a 26 dp icon, so it reads as a key
+ * rather than a toolbar glyph and meets the 48 dp minimum touch target.
+ */
+@Composable
+fun BackspaceKey(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    hapticsEnabled: Boolean = true
+) {
+    val haptic = LocalHapticFeedback.current
+    Surface(
+        onClick = {
+            if (hapticsEnabled) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            onClick()
+        },
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = modifier
+            .size(width = 64.dp, height = 48.dp)
+            .semantics { contentDescription = BACKSPACE_KEY_DESCRIPTION }
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = Icons.Default.Backspace,
+                contentDescription = null,
+                modifier = Modifier.size(26.dp)
+            )
+        }
+    }
+}
+
 @Composable
 fun CalculatorKeypad(
     onDigit: (String) -> Unit,
@@ -175,21 +212,28 @@ fun CalculatorKeypad(
                     Pair("M-", "Memory Subtract")
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            // Memory keys share the width left over by the backspace key and the toggle,
+            // so the larger backspace key never pushes the row off narrow screens.
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 memoryButtons.forEach { (mem, desc) ->
                     Surface(
                         onClick = { onMemoryAction(mem) },
                         shape = RoundedCornerShape(8.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                         modifier = Modifier
-                            .padding(horizontal = 2.dp)
+                            .weight(1f)
                             .semantics { contentDescription = desc }
                     ) {
                         Text(
                             text = mem,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            modifier = Modifier.padding(vertical = 6.dp)
                         )
                     }
                 }
@@ -197,21 +241,11 @@ fun CalculatorKeypad(
 
             // Right Action Controls: Backspace + Scientific Toggle
             Row(
+                modifier = Modifier.padding(start = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Inline Backspace Button
-                IconButton(
-                    onClick = onBackspace,
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Backspace,
-                        contentDescription = "Backspace",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
+                BackspaceKey(onClick = onBackspace, hapticsEnabled = hapticsEnabled)
 
                 // Scientific Toggle Button
                 TextButton(

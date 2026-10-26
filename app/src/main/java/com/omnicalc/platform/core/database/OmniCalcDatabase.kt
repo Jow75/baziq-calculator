@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import com.omnicalc.platform.core.database.daos.BackupDao
 import com.omnicalc.platform.core.database.daos.CurrencyDao
 import com.omnicalc.platform.core.database.daos.FavoriteDao
 import com.omnicalc.platform.core.database.daos.HistoryDao
@@ -24,6 +25,7 @@ abstract class OmniCalcDatabase : RoomDatabase() {
     abstract fun historyDao(): HistoryDao
     abstract fun favoriteDao(): FavoriteDao
     abstract fun currencyDao(): CurrencyDao
+    abstract fun backupDao(): BackupDao
 
     companion object {
         @Volatile

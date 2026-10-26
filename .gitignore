@@ -18,3 +18,30 @@ captures
 /*.png
 /*.db
 /extracted_db/
+
+# Release signing material (never commit)
+keystore.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.lineage
+signing.properties
+.env
+.env.*
+
+# User data backups exported from the app, and local preview output
+baziq-calculator-backup*.json
+/artifacts/
+
+# Local release outputs: APKs are published as GitHub Release assets, not committed
+/release/
+
+# Session engineering reports: kept on this computer. They record device details, local paths
+# and test locations that do not belong in a public repository.
+/docs/BAZIQ_*_REPORT.md
+/website/tools/__pycache__/
+__pycache__/
+
+# Old AI prompt files (kept locally, not part of the project)
+/phase3_prompt*.txt

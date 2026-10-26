@@ -385,10 +385,14 @@ class CurrencyConversionTest {
     @Test
     fun testStaticDatasetMetadataIntegrity() {
         val meta = StaticFallbackRateProvider.METADATA
-        assertEquals("2026.10-REF", meta.version)
-        assertEquals("October 2026", meta.datasetDate)
-        assertEquals("2026-10-01", meta.lastUpdateDate)
-        assertTrue(meta.currencyCount >= 170)
+        // The embedded dataset dates from 2024-10-01 (METADATA_TIMESTAMP_MS); it was previously
+        // mislabelled as October 2026. CurrencyRegressionTest checks label/timestamp consistency.
+        assertEquals("2024.10-REF", meta.version)
+        assertEquals("October 2024", meta.datasetDate)
+        assertEquals("2024-10-01", meta.lastUpdateDate)
+        // Shown in Settings and the converter; it must match the table, not a stated figure
+        assertEquals(StaticFallbackRateProvider.STATIC_RATES.size, meta.currencyCount)
+        assertTrue(meta.currencyCount >= 150)
         assertTrue(meta.sourceReference.isNotBlank())
         assertTrue(meta.description.contains("emergency offline baseline"))
     }
@@ -1037,12 +1041,14 @@ class CurrencyConversionTest {
     }
 
     @Test
-    fun testRemoveActiveCurrency_preservesRemainingAmounts() = runTest {
+    fun testRemoveActiveCurrency_preservesRemainingAmounts() = testScope.runTest {
         val fakeDao = FakeCurrencyDao()
-        val repo = CurrencyRepository(fakeDao, externalScope = TestScope(UnconfinedTestDispatcher()))
+        // Test dispatcher for IO as in the other view model tests: with the real IO dispatcher the
+        // repository write finished after this test reset Dispatchers.Main, failing a later test.
+        val repo = CurrencyRepository(fakeDao, externalScope = testScope, ioDispatcher = testDispatcher)
         repo.ensureDefaultsSeeded()
 
-        val vm = CurrencyViewModel(repo, null)
+        val vm = CurrencyViewModel(repo)
         vm.onAmountChanged("USD", "100")
 
         val eurBefore = vm.uiState.value.items.find { it.currency.code == "EUR" }

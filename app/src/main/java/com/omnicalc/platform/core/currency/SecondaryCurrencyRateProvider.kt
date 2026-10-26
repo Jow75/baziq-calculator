@@ -2,13 +2,10 @@ package com.omnicalc.platform.core.currency
 
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
-import com.squareup.moshi.Moshi
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.util.concurrent.TimeUnit
 
 @JsonClass(generateAdapter = true)
 data class FrankfurterResponse(
@@ -19,47 +16,49 @@ data class FrankfurterResponse(
 )
 
 class SecondaryCurrencyRateProvider(
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(3, TimeUnit.SECONDS)
-        .readTimeout(4, TimeUnit.SECONDS)
-        .build()
+    clientProvider: () -> OkHttpClient = { CurrencyNetwork.client }
 ) : CurrencyRateProvider {
 
     override val providerName: String = "ECB Reference (Frankfurter)"
-    private val moshi by lazy { Moshi.Builder().add(KotlinJsonAdapterFactory()).build() }
-    private val adapter by lazy { moshi.adapter(FrankfurterResponse::class.java) }
+    private val client by lazy(clientProvider)
+    private val adapter by lazy { CurrencyNetwork.moshi.adapter(FrankfurterResponse::class.java) }
 
     override suspend fun fetchRates(baseCurrency: String): Result<CurrencyRateSet> = withContext(Dispatchers.IO) {
         try {
-            val url = "https://api.frankfurter.app/latest?from=$baseCurrency"
+            // api.frankfurter.app now answers with a 301 to this host; calling it directly
+            // avoids the extra round trip, which was slow enough to exceed the read timeout.
             val request = Request.Builder()
-                .url(url)
-                .header("User-Agent", "OmniCalc-Android/1.0")
+                .url("https://api.frankfurter.dev/v1/latest?from=$baseCurrency")
+                .header("User-Agent", CurrencyNetwork.USER_AGENT)
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("Secondary provider HTTP error ${response.code}"))
-            }
+            val body = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(Exception("Secondary provider HTTP error ${response.code}"))
+                }
+                response.body?.string()
+            } ?: return@withContext Result.failure(Exception("Empty body from secondary provider"))
 
-            val body = response.body?.string() ?: return@withContext Result.failure(Exception("Empty body from secondary provider"))
-            val parsed = adapter.fromJson(body) ?: return@withContext Result.failure(Exception("Failed to parse secondary provider JSON"))
-
-            val ratesMap = parsed.rates ?: return@withContext Result.failure(Exception("No rates in secondary provider response"))
-            val mutableRates = ratesMap.toMutableMap()
-            mutableRates[baseCurrency] = 1.0 // Base rate
-
-            Result.success(
-                CurrencyRateSet(
-                    baseCurrency = parsed.base ?: baseCurrency,
-                    rates = mutableRates,
-                    timestampMs = System.currentTimeMillis(),
-                    providerName = providerName,
-                    status = FreshnessStatus.CURRENT
-                )
-            )
+            Result.success(parse(body, baseCurrency))
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /** Parses a Frankfurter v1 "latest" response. */
+    internal fun parse(body: String, requestedBase: String): CurrencyRateSet {
+        val parsed = adapter.fromJson(body) ?: throw IllegalStateException("Failed to parse secondary provider JSON")
+        val ratesMap = parsed.rates?.takeIf { it.isNotEmpty() }
+            ?: throw IllegalStateException("No rates in secondary provider response")
+        val mutableRates = ratesMap.toMutableMap()
+        mutableRates[requestedBase] = 1.0 // Base rate
+
+        return CurrencyRateSet(
+            baseCurrency = parsed.base ?: requestedBase,
+            rates = mutableRates,
+            timestampMs = System.currentTimeMillis(),
+            providerName = providerName,
+            status = FreshnessStatus.CURRENT
+        )
     }
 }

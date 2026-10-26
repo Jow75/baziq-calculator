@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.omnicalc.platform.core.currency.CurrencyRateSet
 import com.omnicalc.platform.core.registry.ToolCategory
 import com.omnicalc.platform.core.registry.ToolDefinition
 import com.omnicalc.platform.core.registry.ToolRegistry
@@ -25,14 +26,16 @@ import com.omnicalc.platform.core.registry.ToolRegistry
 fun SearchScreen(
     onNavigateBack: () -> Unit,
     onNavigateToTool: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    currentRates: () -> CurrencyRateSet? = { null }
 ) {
     var searchQuery by remember { mutableStateOf("") }
     val searchResults = remember(searchQuery) {
         ToolRegistry.search(searchQuery)
     }
     val quickResult = remember(searchQuery) {
-        com.omnicalc.platform.core.math.QuickCalculationEngine.evaluateQuick(searchQuery)
+        // Quick conversions ("100 usd to kes") use the same rates as the currency converter
+        com.omnicalc.platform.core.math.QuickCalculationEngine.evaluateQuick(searchQuery, rateSet = currentRates())
     }
 
     Scaffold(

@@ -95,3 +95,51 @@ abstract class CurrencyDao {
     @Query("DELETE FROM cached_currency_rates")
     abstract suspend fun clearCachedRates()
 }
+
+/** Whole-table reads and the merge for the backup file (core/backup). */
+@Dao
+abstract class BackupDao {
+    @Query("SELECT * FROM calculation_history ORDER BY timestampMs ASC")
+    abstract suspend fun allHistory(): List<CalculationHistoryEntity>
+
+    @Query("SELECT * FROM favorite_tools ORDER BY orderIndex ASC")
+    abstract suspend fun allFavorites(): List<FavoriteToolEntity>
+
+    @Query("SELECT * FROM currency_workspace_items ORDER BY orderIndex ASC")
+    abstract suspend fun workspace(): List<WorkspaceCurrencyEntity>
+
+    @Query("SELECT * FROM custom_rate_overrides")
+    abstract suspend fun customRates(): List<CustomRateOverrideEntity>
+
+    @Insert
+    protected abstract suspend fun insertHistory(items: List<CalculationHistoryEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    protected abstract suspend fun upsertFavorites(items: List<FavoriteToolEntity>)
+
+    @Query("DELETE FROM currency_workspace_items")
+    protected abstract suspend fun clearWorkspace()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    protected abstract suspend fun insertWorkspace(items: List<WorkspaceCurrencyEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    protected abstract suspend fun upsertCustomRates(items: List<CustomRateOverrideEntity>)
+
+    /** Applies an import in one transaction: all of it, or nothing. */
+    @Transaction
+    open suspend fun restore(
+        history: List<CalculationHistoryEntity>,
+        favorites: List<FavoriteToolEntity>,
+        workspace: List<WorkspaceCurrencyEntity>?,
+        customRates: List<CustomRateOverrideEntity>
+    ) {
+        if (history.isNotEmpty()) insertHistory(history)
+        if (favorites.isNotEmpty()) upsertFavorites(favorites)
+        if (!workspace.isNullOrEmpty()) {
+            clearWorkspace()
+            insertWorkspace(workspace)
+        }
+        if (customRates.isNotEmpty()) upsertCustomRates(customRates)
+    }
+}

@@ -1,13 +1,15 @@
 package com.omnicalc.platform.core.currency
 
 data class StaticDatasetMetadata(
-    val version: String = "2026.10-REF",
-    val datasetDate: String = "October 2026",
-    val lastUpdateDate: String = "2026-10-01",
+    val version: String = "2024.10-REF",
+    val datasetDate: String = "October 2024",
+    val lastUpdateDate: String = "2024-10-01",
     val sourceReference: String = "Consolidated Central Bank, ECB & IMF Reference Rates",
-    val currencyCount: Int = 172,
-    val description: String = "Static embedded rates provide an emergency offline baseline and reference values for currencies unavailable in live feeds. They are not live financial market data."
-)
+    val description: String = "Static embedded rates provide an emergency offline baseline and reference values for currencies unavailable in live feeds. They are not live financial market data and can differ substantially from current rates."
+) {
+    /** Currencies in the embedded table, counted rather than stated (it once claimed 172). */
+    val currencyCount: Int get() = StaticFallbackRateProvider.STATIC_RATES.size
+}
 
 class StaticFallbackRateProvider : CurrencyRateProvider {
     override val providerName: String = "Offline Reference Rates"
@@ -29,7 +31,7 @@ class StaticFallbackRateProvider : CurrencyRateProvider {
 
     companion object {
         val METADATA = StaticDatasetMetadata()
-        const val METADATA_TIMESTAMP_MS = 1727740800000L // 2026-10-01 00:00:00 UTC
+        const val METADATA_TIMESTAMP_MS = 1727740800000L // 2024-10-01 00:00:00 UTC
 
         val STATIC_RATES: Map<String, Double> = mapOf(
             // Base & East / Horn of Africa

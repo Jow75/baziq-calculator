@@ -12,6 +12,14 @@ object BigDecimalMath {
     val DEFAULT_MATH_CONTEXT = MathContext(34, RoundingMode.HALF_EVEN)
     val DISPLAY_MATH_CONTEXT = MathContext(16, RoundingMode.HALF_EVEN)
 
+    // A double carries 15 reliable significant decimal digits; anything beyond is binary noise
+    // (e.g. sin(30°) = 0.49999999999999994).
+    private val DOUBLE_RESULT_MATH_CONTEXT = MathContext(15, RoundingMode.HALF_EVEN)
+
+    /** Converts a double computed by java.lang.Math into a BigDecimal without its binary noise. */
+    fun fromDouble(value: Double): BigDecimal =
+        BigDecimal.valueOf(value).round(DOUBLE_RESULT_MATH_CONTEXT)
+
     fun add(a: BigDecimal, b: BigDecimal, mc: MathContext = DEFAULT_MATH_CONTEXT): BigDecimal =
         a.add(b, mc)
 
@@ -74,7 +82,7 @@ object BigDecimalMath {
         if (result.isNaN() || result.isInfinite()) {
             throw ArithmeticException("Calculation resulted in overflow or undefined number")
         }
-        return BigDecimal(result, mc)
+        return fromDouble(result)
     }
 
     fun factorial(n: Int): BigDecimal {

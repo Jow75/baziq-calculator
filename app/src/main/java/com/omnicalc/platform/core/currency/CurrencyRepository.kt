@@ -22,13 +22,17 @@ class CurrencyRepository(
     private val secondaryProvider: CurrencyRateProvider = SecondaryCurrencyRateProvider(),
     private val fallbackProvider: CurrencyRateProvider = StaticFallbackRateProvider(),
     private val externalScope: CoroutineScope = CoroutineScope(Dispatchers.IO),
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val clock: () -> Long = System::currentTimeMillis
 ) {
     private val MC = MathContext(18, RoundingMode.HALF_EVEN)
     private val workspaceMutex = Mutex()
 
     @Volatile
     private var isWorkspaceSeeded = false
+
+    @Volatile
+    private var lastAutoRefreshAttemptMs = Long.MIN_VALUE
 
     val workspaceCurrencies: Flow<List<CurrencyInfo>> = currencyDao.getWorkspaceCurrencies()
         .map { list ->
@@ -44,29 +48,28 @@ class CurrencyRepository(
     val customOverridesFlow: Flow<Map<String, Double>> = currencyDao.getCustomOverrides()
         .map { list -> list.associate { it.currencyCode to it.customRateToBase } }
 
-    private val _rateState = MutableStateFlow<CurrencyRateSet>(
+    // Until the cache is read, conversions use the built-in reference table, labelled as such.
+    private val _rateState = MutableStateFlow(
         CurrencyRateSet(
             baseCurrency = "USD",
-            rates = emptyMap(),
-            timestampMs = System.currentTimeMillis() - 3600_000L,
-            providerName = "Offline Reference",
-            status = FreshnessStatus.OFFLINE
+            rates = StaticFallbackRateProvider.STATIC_RATES,
+            timestampMs = StaticFallbackRateProvider.METADATA_TIMESTAMP_MS,
+            providerName = fallbackProvider.providerName,
+            status = FreshnessStatus.OFFLINE,
+            rateSources = StaticFallbackRateProvider.STATIC_RATES.keys.associateWith { RateSource.OFFLINE_REFERENCE }
         )
     )
     val rateState: StateFlow<CurrencyRateSet> = _rateState.asStateFlow()
 
-    init {
-        externalScope.launch {
-            initSeedData()
-        }
+    private val seedJob = externalScope.launch {
+        initSeedData()
     }
 
     private fun computeFreshness(timestampMs: Long, isOnlineSuccess: Boolean): FreshnessStatus {
+        val ageMs = clock() - timestampMs
         if (!isOnlineSuccess) {
-            val ageMs = System.currentTimeMillis() - timestampMs
             return if (ageMs >= 24 * 3600_000L) FreshnessStatus.STALE else FreshnessStatus.OFFLINE
         }
-        val ageMs = System.currentTimeMillis() - timestampMs
         return when {
             ageMs < 6 * 3600_000L -> FreshnessStatus.CURRENT
             ageMs < 24 * 3600_000L -> FreshnessStatus.RECENT
@@ -116,34 +119,64 @@ class CurrencyRepository(
                 )
             }
         } else {
-            val ratesMap = existingRates.associate { it.currencyCode to it.rateToBase }
-            val first = existingRates.first()
-            val isOfflineReference = existingRates.all { it.status == RateSource.OFFLINE_REFERENCE.name } || first.providerName == fallbackProvider.providerName
-            val freshness = if (isOfflineReference) {
-                FreshnessStatus.OFFLINE
-            } else {
-                computeFreshness(first.timestampMs, isOnlineSuccess = false)
-            }
-            val isStale = freshness == FreshnessStatus.STALE
-
-            val sourcesMap = existingRates.associate { entity ->
-                val src = when (entity.status) {
-                    RateSource.OFFLINE_REFERENCE.name -> RateSource.OFFLINE_REFERENCE
-                    RateSource.MANUAL.name -> RateSource.MANUAL
-                    else -> if (isStale) RateSource.STALE else RateSource.RECENT
-                }
-                entity.currencyCode to src
-            }
-
-            _rateState.value = CurrencyRateSet(
-                baseCurrency = first.baseCurrency,
-                rates = ratesMap,
-                timestampMs = first.timestampMs,
-                providerName = first.providerName,
-                status = freshness,
-                rateSources = sourcesMap
-            )
+            _rateState.value = rateSetFromCache(existingRates)
         }
+    }
+
+    /** Rebuilds a rate set from cached rows, labelled as saved (not freshly downloaded) rates. */
+    private fun rateSetFromCache(rows: List<CachedRateEntity>): CurrencyRateSet {
+        val ratesMap = rows.associate { it.currencyCode to it.rateToBase }
+        // Reference rows are stored under their own provider name and timestamp, so describe
+        // the set by a row that came from a live provider when there is one.
+        val liveRow = rows.firstOrNull { it.status != RateSource.OFFLINE_REFERENCE.name }
+        val representative = liveRow ?: rows.first()
+        val isOfflineReference = liveRow == null || representative.providerName == fallbackProvider.providerName
+        val freshness = if (isOfflineReference) {
+            FreshnessStatus.OFFLINE
+        } else {
+            computeFreshness(representative.timestampMs, isOnlineSuccess = false)
+        }
+        val isStale = freshness == FreshnessStatus.STALE
+
+        val sourcesMap = rows.associate { entity ->
+            val src = when (entity.status) {
+                RateSource.OFFLINE_REFERENCE.name -> RateSource.OFFLINE_REFERENCE
+                RateSource.MANUAL.name -> RateSource.MANUAL
+                else -> if (isStale) RateSource.STALE else RateSource.RECENT
+            }
+            entity.currencyCode to src
+        }
+
+        return CurrencyRateSet(
+            baseCurrency = representative.baseCurrency,
+            rates = ratesMap,
+            timestampMs = representative.timestampMs,
+            providerName = representative.providerName,
+            status = freshness,
+            rateSources = sourcesMap
+        )
+    }
+
+    /** Suspends until the cached rates (or the built-in reference) have been loaded. */
+    suspend fun awaitInitialized() = seedJob.join()
+
+    /**
+     * Freshness policy for automatic refreshes. Saved rates are always usable immediately;
+     * a download is due only when this session has no download younger than
+     * [AUTO_REFRESH_INTERVAL_MS], and is attempted at most once per [AUTO_RETRY_INTERVAL_MS]
+     * so an offline device is not retried on every visit.
+     *
+     * @return true when an automatic refresh is due; the attempt is recorded, so the caller
+     *         is expected to call [refreshRates].
+     */
+    suspend fun claimAutoRefresh(): Boolean {
+        awaitInitialized()
+        val now = clock()
+        val lastFetch = _rateState.value.fetchedAtMs
+        if (lastFetch != null && now - lastFetch < AUTO_REFRESH_INTERVAL_MS) return false
+        if (lastAutoRefreshAttemptMs != Long.MIN_VALUE && now - lastAutoRefreshAttemptMs < AUTO_RETRY_INTERVAL_MS) return false
+        lastAutoRefreshAttemptMs = now
+        return true
     }
 
     suspend fun refreshRates(force: Boolean = true): Result<CurrencyRateSet> = withContext(ioDispatcher) {
@@ -178,7 +211,8 @@ class CurrencyRepository(
             val updatedRateSet = rateSet.copy(
                 rates = mergedRates,
                 status = freshness,
-                rateSources = sourcesMap
+                rateSources = sourcesMap,
+                fetchedAtMs = clock()
             )
             saveRatesToDb(updatedRateSet)
             _rateState.value = updatedRateSet
@@ -212,7 +246,8 @@ class CurrencyRepository(
             val updatedRateSet = rateSet.copy(
                 rates = mergedRates,
                 status = freshness,
-                rateSources = sourcesMap
+                rateSources = sourcesMap,
+                fetchedAtMs = clock()
             )
             saveRatesToDb(updatedRateSet)
             _rateState.value = updatedRateSet
@@ -222,33 +257,7 @@ class CurrencyRepository(
         // Tier 3: Local Cached Rates from Room DB
         val existingRates = currencyDao.getAllCachedRates()
         if (existingRates.isNotEmpty()) {
-            val ratesMap = existingRates.associate { it.currencyCode to it.rateToBase }
-            val first = existingRates.first()
-            val isOfflineReference = existingRates.all { it.status == RateSource.OFFLINE_REFERENCE.name } || first.providerName == fallbackProvider.providerName
-            val freshness = if (isOfflineReference) {
-                FreshnessStatus.OFFLINE
-            } else {
-                computeFreshness(first.timestampMs, isOnlineSuccess = false)
-            }
-            val isStale = freshness == FreshnessStatus.STALE
-
-            val sourcesMap = existingRates.associate { entity ->
-                val src = when (entity.status) {
-                    RateSource.OFFLINE_REFERENCE.name -> RateSource.OFFLINE_REFERENCE
-                    RateSource.MANUAL.name -> RateSource.MANUAL
-                    else -> if (isStale) RateSource.STALE else RateSource.RECENT
-                }
-                entity.currencyCode to src
-            }
-
-            val cachedSet = CurrencyRateSet(
-                baseCurrency = first.baseCurrency,
-                rates = ratesMap,
-                timestampMs = first.timestampMs,
-                providerName = first.providerName,
-                status = freshness,
-                rateSources = sourcesMap
-            )
+            val cachedSet = rateSetFromCache(existingRates)
             _rateState.value = cachedSet
             return@withContext Result.success(cachedSet)
         }
@@ -365,14 +374,11 @@ class CurrencyRepository(
         val fromUpper = fromCode.uppercase()
         val toUpper = toCode.uppercase()
 
-        val fromRate = overrides[fromUpper]
-            ?: ratesMap[fromUpper]
-            ?: StaticFallbackRateProvider.STATIC_RATES[fromUpper]
-            ?: 1.0
-        val toRate = overrides[toUpper]
-            ?: ratesMap[toUpper]
-            ?: StaticFallbackRateProvider.STATIC_RATES[toUpper]
-            ?: 1.0
+        // A currency without any known rate is an error, never an assumed 1:1 rate.
+        val fromRate = rateOf(fromUpper, ratesMap, overrides)
+            ?: throw ArithmeticException("No exchange rate available for $fromUpper")
+        val toRate = rateOf(toUpper, ratesMap, overrides)
+            ?: throw ArithmeticException("No exchange rate available for $toUpper")
 
         if (fromRate <= 0.0 || toRate <= 0.0) {
             throw ArithmeticException("Invalid exchange rate for conversion: $fromUpper ($fromRate) to $toUpper ($toRate)")
@@ -383,6 +389,29 @@ class CurrencyRepository(
         val toRateBd = BigDecimal(toRate.toString())
 
         return amount.multiply(toRateBd, MC).divide(fromRateBd, MC)
+    }
+
+    /** The rate of [code] against the set's base: manual override, then downloaded, then built-in. */
+    private fun rateOf(code: String, ratesMap: Map<String, Double>, overrides: Map<String, Double>): Double? =
+        overrides[code] ?: ratesMap[code] ?: StaticFallbackRateProvider.STATIC_RATES[code]
+
+    /**
+     * The number shown in "1 FROM = x TO" labels. Rates are stored as Double, whose
+     * toString() is the shortest decimal that round-trips, i.e. the provider's own literal
+     * (129.84 stays 129.84); the label keeps those digits instead of rounding them.
+     */
+    fun formatUnitRate(
+        fromCode: String,
+        toCode: String,
+        ratesMap: Map<String, Double>,
+        overrides: Map<String, Double> = emptyMap()
+    ): String {
+        val unitRate = convert(BigDecimal.ONE, fromCode, toCode, ratesMap, overrides)
+        val providerValues = listOfNotNull(
+            rateOf(fromCode.uppercase(), ratesMap, overrides),
+            rateOf(toCode.uppercase(), ratesMap, overrides)
+        ).map { BigDecimal(it.toString()) }
+        return CurrencyFormatter.formatRate(unitRate, CurrencyFormatter.rateSignificantDigits(*providerValues.toTypedArray()))
     }
 
     fun convertWithResolution(
@@ -399,5 +428,11 @@ class CurrencyRepository(
 
     companion object {
         val DEFAULT_WORKSPACE_CODES = listOf("USD", "EUR", "KES", "TZS", "KMF")
+
+        /** Downloads younger than this are reused without contacting the rate service. */
+        const val AUTO_REFRESH_INTERVAL_MS = 6 * 3600_000L
+
+        /** Minimum gap between automatic attempts, so failures are not retried on every visit. */
+        const val AUTO_RETRY_INTERVAL_MS = 15 * 60_000L
     }
 }

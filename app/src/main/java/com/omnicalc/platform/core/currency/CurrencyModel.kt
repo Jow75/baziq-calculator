@@ -1,9 +1,6 @@
 package com.omnicalc.platform.core.currency
 
 import android.content.Context
-import android.location.Geocoder
-import android.location.Location
-import android.location.LocationManager
 import android.telephony.TelephonyManager
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -61,8 +58,14 @@ data class CurrencyRateSet(
     val timestampMs: Long,
     val providerName: String,
     val status: FreshnessStatus = FreshnessStatus.RECENT,
-    val rateSources: Map<String, RateSource> = emptyMap()
+    val rateSources: Map<String, RateSource> = emptyMap(),
+    /** When this set was downloaded during the current app session; null for cached or built-in rates. */
+    val fetchedAtMs: Long? = null
 ) {
+    /** True when no rate came from a live provider, i.e. only the built-in reference table is in use. */
+    val isReferenceOnly: Boolean
+        get() = rateSources.isNotEmpty() && rateSources.values.all { it == RateSource.OFFLINE_REFERENCE }
+
     fun resolveConversion(
         fromCode: String,
         toCode: String,
@@ -348,6 +351,8 @@ object CurrencyCatalog {
     }
 
     private val lookupMap: Map<String, CurrencyInfo> = ALL_CURRENCIES.associateBy { it.code.uppercase() }
+
+    fun isSupported(code: String): Boolean = lookupMap.containsKey(code.uppercase())
 
     fun find(code: String): CurrencyInfo {
         val upper = code.uppercase()

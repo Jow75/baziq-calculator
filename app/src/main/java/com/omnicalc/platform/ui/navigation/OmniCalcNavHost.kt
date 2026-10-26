@@ -7,8 +7,11 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraphBuilder
@@ -18,6 +21,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.omnicalc.platform.OmniCalcApplication
+import com.omnicalc.platform.core.currency.DeviceCountryLocator
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import com.omnicalc.platform.feature.calculator.CalculatorScreen
@@ -148,7 +152,11 @@ fun OmniCalcNavHost(
     }
 
     val currencyViewModel = viewModel {
-        CurrencyViewModel(app.currencyRepository, app.applicationContext)
+        CurrencyViewModel(
+            currencyRepository = app.currencyRepository,
+            countryLocator = DeviceCountryLocator(app.applicationContext),
+            localCurrencyPreferences = app.userPreferencesRepository
+        )
     }
 
     val navigateToToolWithMetrics: (String) -> Unit = { route ->
@@ -187,16 +195,30 @@ fun OmniCalcNavHost(
         }
     }
 
+    // Read only in the draw phase below, so navigation does not recompose this host
+    val currentEntry by navController.currentBackStackEntryAsState()
+    val isToolOnTop by remember {
+        derivedStateOf { currentEntry?.destination?.route?.startsWith("calculator/") == false }
+    }
+
     Box(modifier = modifier.fillMaxSize()) {
         // Persistent base layer: The Calculator is always kept alive in composition,
         // eliminating 400ms rebuild passes when navigating back from any tool.
-        CalculatorScreen(
-            viewModel = calculatorViewModel,
-            onNavigateToTool = navigateToToolWithMetrics,
-            onNavigateToSearch = navigateToSearchWithMetrics,
-            onNavigateToSettings = navigateToSettingsWithMetrics,
-            onNavigateToHistory = navigateToHistoryWithMetrics
-        )
+        // While an opaque tool screen covers it, it is not drawn, avoiding a full-screen
+        // layer of overdraw on every frame of the tool screen.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .drawWithContent { if (!isToolOnTop) drawContent() }
+        ) {
+            CalculatorScreen(
+                viewModel = calculatorViewModel,
+                onNavigateToTool = navigateToToolWithMetrics,
+                onNavigateToSearch = navigateToSearchWithMetrics,
+                onNavigateToSettings = navigateToSettingsWithMetrics,
+                onNavigateToHistory = navigateToHistoryWithMetrics
+            )
+        }
 
         NavHost(
             navController = navController,
@@ -329,6 +351,7 @@ fun OmniCalcNavHost(
             // Universal Search
             toolComposable("search", navController) {
                 SearchScreen(
+                    currentRates = { app.currencyRepository.rateState.value },
                     onNavigateBack = { navController.safeNavigateBackDebounced() },
                     onNavigateToTool = { route ->
                         navController.navigate(route) {
@@ -357,6 +380,7 @@ fun OmniCalcNavHost(
             toolComposable("settings", navController) {
                 SettingsScreen(
                     preferencesRepository = app.userPreferencesRepository,
+                    backupRepository = app.backupRepository,
                     onNavigateBack = { navController.safeNavigateBackDebounced() }
                 )
             }

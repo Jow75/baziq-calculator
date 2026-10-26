@@ -1,18 +1,5 @@
 <resources>
-    <string name="app_name">OmniCalc</string>
-    <string name="calculator_title">Calculator</string>
-    <string name="currency_title">Currency Converter</string>
-    <string name="units_title">Unit Converter</string>
-    <string name="finance_title">Finance</string>
-    <string name="dates_title">Dates &amp; Time</string>
-    <string name="health_title">Health &amp; Fitness</string>
-    <string name="programmer_title">Programmer</string>
-    <string name="geometry_title">Geometry</string>
-    <string name="statistics_title">Statistics</string>
-    <string name="education_title">Education</string>
-    <string name="fuel_title">Fuel &amp; Travel</string>
-    <string name="history_title">History</string>
-    <string name="favorites_title">Favorites</string>
-    <string name="settings_title">Settings</string>
-    <string name="search_hint">Search tools, units, currencies (e.g. loan, bmi, kes, kg)…</string>
+    <!-- Product name. The company, Baziq Hue, is credited separately ("by Baziq Hue"). -->
+    <string name="app_name">Baziq Calculator</string>
+    <string name="launcher_name">Baziq Calculator</string>
 </resources>

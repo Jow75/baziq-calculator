@@ -1,21 +1,40 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.google.devtools.ksp")
 }
 
-layout.buildDirectory.set(file("build_clean"))
+// Optional -Pomnicalc.buildDir=<path> places outputs outside the workspace, where IDE indexers
+// cannot hold files open and make Gradle's cleanup fail with "Unable to delete directory".
+layout.buildDirectory.set(file(providers.gradleProperty("omnicalc.buildDir").getOrElse("build_clean")))
+
+// Release signing key, kept outside the repository. The properties file (storeFile,
+// storePassword, keyAlias, keyPassword; a relative storeFile is resolved against the file's own
+// folder) is found through the BAZIQ_SIGNING_PROPERTIES environment variable (used by CI), the
+// baziq.signingProperties Gradle property (e.g. in ~/.gradle/gradle.properties), or an ignored
+// keystore.properties in the project root.
+val releaseSigningFile: File? = listOfNotNull(
+    providers.environmentVariable("BAZIQ_SIGNING_PROPERTIES").orNull,
+    providers.gradleProperty("baziq.signingProperties").orNull
+).map { file(it) }.firstOrNull { it.exists() }
+    ?: rootProject.file("keystore.properties").takeIf { it.exists() }
+val releaseKeystoreProperties: Properties? = releaseSigningFile
+    ?.let { file -> Properties().apply { file.inputStream().use { load(it) } } }
 
 android {
     namespace = "com.omnicalc.platform"
     compileSdk = 34
 
     defaultConfig {
+        // Keep this ID: it is the identity of the installed app; changing it would install a
+        // separate app instead of updating it (and leave the user's saved data behind).
         applicationId = "com.omnicalc.platform"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 5
+        versionName = "1.1.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -28,6 +47,14 @@ android {
             enableV1Signing = true
             enableV2Signing = true
         }
+        if (releaseKeystoreProperties != null) {
+            create("release") {
+                storeFile = releaseSigningFile!!.parentFile.resolve(releaseKeystoreProperties.getProperty("storeFile"))
+                storePassword = releaseKeystoreProperties.getProperty("storePassword")
+                keyAlias = releaseKeystoreProperties.getProperty("keyAlias")
+                keyPassword = releaseKeystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -35,11 +62,15 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Signed with the dedicated release key when it is configured. Without it the APK is
+            // left unsigned (app-release-unsigned.apk): a release is never signed with a debug key.
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
@@ -60,6 +91,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {
@@ -69,6 +101,14 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+
+    // Compose UI tests run as local (Robolectric) tests, so they never install anything on a
+    // phone; connectedAndroidTest would replace the installed app with the debug variant.
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
         }
     }
 }
@@ -104,17 +144,21 @@ dependencies {
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
-    // Retrofit & Moshi for Currency API
-    implementation("com.squareup.retrofit2:retrofit:2.11.0")
-    implementation("com.squareup.retrofit2:converter-moshi:2.11.0")
-    implementation("com.squareup.moshi:moshi-kotlin:1.15.1")
+    // OkHttp & Moshi for the currency rate APIs. Moshi adapters are generated at build time
+    // (KSP) for the @JsonClass response models, avoiding kotlin-reflect at runtime.
+    implementation("com.squareup.moshi:moshi:1.15.1")
+    ksp("com.squareup.moshi:moshi-kotlin-codegen:1.15.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
     // Unit Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test:1.9.24")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation(composeBom)
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    // IdlingPolicies, to give the Robolectric UI tests' first, cold start more than 60 s
+    testImplementation("androidx.test.espresso:espresso-core:3.5.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

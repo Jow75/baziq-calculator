@@ -2,6 +2,9 @@ package com.omnicalc.platform.core.currency
 
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.text.DecimalFormat
+import java.text.DecimalFormatSymbols
+import java.util.Locale
 
 /**
  * Universal Currency Number Formatter.
@@ -69,6 +72,42 @@ object CurrencyFormatter {
     fun sanitizeToNumeric(formatted: String): String {
         return formatted.replace(",", "").replace(" ", "").trim()
     }
+
+    /**
+     * Formats an exchange rate without hiding its decimals: 129.84 stays "129.84", never "130".
+     *
+     * A rate taken directly from the provider keeps all of its digits. A rate derived by
+     * division (a cross rate such as KES -> UGX) has no exact decimal form, so it is limited to
+     * [significantDigits] (but never rounds the integer part away), which avoids binary-style
+     * noise like 129.8399999997. Exact values show at least two decimals ("3,550.00").
+     */
+    fun formatRate(rate: BigDecimal, significantDigits: Int = MAX_RATE_SIGNIFICANT_DIGITS): String {
+        if (rate.signum() <= 0) return "0.00"
+        val integerDigits = (rate.precision() - rate.scale()).coerceAtLeast(0)
+        val digits = significantDigits.coerceIn(MIN_RATE_SIGNIFICANT_DIGITS, MAX_RATE_SIGNIFICANT_DIGITS)
+            .coerceAtLeast(integerDigits)
+        val value = rate.round(java.math.MathContext(digits, RoundingMode.HALF_EVEN)).stripTrailingZeros()
+        // Padding zeros is only truthful for an exact value; after rounding it would claim
+        // precision the rate does not have.
+        val exact = value.compareTo(rate) == 0
+        val format = DecimalFormat("#,##0.##", DecimalFormatSymbols.getInstance(Locale.US)).apply {
+            minimumFractionDigits = if (exact) 2 else 0
+            maximumFractionDigits = value.scale().coerceAtLeast(2)
+            isParseBigDecimal = true
+        }
+        return format.format(value)
+    }
+
+    /**
+     * Significant digits worth showing for a cross rate fromRate -> toRate: as many as the
+     * more precise of the two provider values, so USD -> KES (1 and 129.84) shows 129.84 and
+     * KES -> USD shows 0.0077018.
+     */
+    fun rateSignificantDigits(vararg providerRates: BigDecimal): Int =
+        providerRates.maxOfOrNull { it.stripTrailingZeros().precision() } ?: MAX_RATE_SIGNIFICANT_DIGITS
+
+    const val MIN_RATE_SIGNIFICANT_DIGITS = 5
+    const val MAX_RATE_SIGNIFICANT_DIGITS = 15
 
     /**
      * Safely parses a formatted or unformatted string into a BigDecimal.

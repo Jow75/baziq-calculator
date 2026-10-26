@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import com.omnicalc.platform.core.backup.BackupRepository
 import com.omnicalc.platform.core.currency.CurrencyRepository
 import com.omnicalc.platform.core.database.OmniCalcDatabase
 import com.omnicalc.platform.core.preferences.UserPreferencesRepository
@@ -29,6 +30,10 @@ class OmniCalcApplication : Application() {
 
     val userPreferencesRepository: UserPreferencesRepository by lazy {
         UserPreferencesRepository(this)
+    }
+
+    val backupRepository: BackupRepository by lazy {
+        BackupRepository(database.backupDao(), userPreferencesRepository, BuildConfig.VERSION_NAME)
     }
 
     override fun onCreate() {

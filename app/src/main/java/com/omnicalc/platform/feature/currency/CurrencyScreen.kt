@@ -5,18 +5,17 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.ContextCompat
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
@@ -46,6 +45,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
@@ -62,17 +62,13 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.omnicalc.platform.core.currency.CurrencyCatalog
-import com.omnicalc.platform.core.currency.CurrencyFormatter
-import com.omnicalc.platform.core.currency.CurrencyInfo
-import com.omnicalc.platform.core.currency.CurrencyRateSet
 import com.omnicalc.platform.core.currency.StaticFallbackRateProvider
-import com.omnicalc.platform.ui.components.ConversionSourceBadge
 import com.omnicalc.platform.ui.components.DisclaimerCard
 import com.omnicalc.platform.ui.components.OfflineStatusBadge
 import kotlinx.coroutines.launch
-import java.text.DecimalFormat
-import java.text.DecimalFormatSymbols
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.roundToInt
@@ -107,6 +103,31 @@ fun CurrencyScreen(
         }
     }
 
+    // Saved rates are shown immediately; a background download runs only when the
+    // repository's freshness policy says one is due (never per keystroke).
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        viewModel.refreshRatesIfDue()
+        // Country check for automatic local currency (throttled; also picks up a permission
+        // granted later in Android settings, without reinstalling).
+        viewModel.onConverterVisible()
+    }
+
+    // Approximate (coarse) location is enough to tell the country; background location is never requested.
+    var permissionEnablesAuto by remember { mutableStateOf(false) }
+    val locationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        viewModel.onLocationPermissionResult(granted, permissionEnablesAuto)
+    }
+    val requestLocalCurrency: (Boolean) -> Unit = { enableAuto ->
+        val granted = listOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
+            .any { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
+        if (granted) {
+            viewModel.onLocationPermissionResult(true, enableAuto)
+        } else {
+            permissionEnablesAuto = enableAuto
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+    }
+
 
     var measuredItemHeightPx by remember { mutableFloatStateOf(0f) }
     val spacingPx = with(density) { 10.dp.toPx() }
@@ -118,20 +139,6 @@ fun CurrencyScreen(
         val ordered = order.mapNotNull { itemMap[it.uppercase()] }
         val missing = state.items.filter { item -> ordered.none { it.currency.code.equals(item.currency.code, ignoreCase = true) } }
         ordered + missing
-    }
-
-    val locationPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ ->
-        val detected = viewModel.detectAndSelectLocalCurrency(context)
-        coroutineScope.launch {
-            val idx = displayItems.indexOfFirst {
-                it.currency.code.equals(detected.currency.code, ignoreCase = true)
-            }
-            if (idx >= 0) {
-                lazyListState.animateScrollToItem(idx)
-            }
-        }
     }
 
     // Scroll-into-view is now handled exclusively by BringIntoViewRequester
@@ -182,7 +189,9 @@ fun CurrencyScreen(
         dragOffsetY = 0f
     }
 
-    val isImeOpen = WindowInsets.ime.getBottom(density) > 0
+    // A boolean that flips once per keyboard show/hide. Reading the raw IME inset height here
+    // recomposed the whole screen on every frame of the keyboard animation.
+    val isImeOpen = WindowInsets.isImeVisible
 
     Scaffold(
         topBar = {
@@ -257,15 +266,22 @@ fun CurrencyScreen(
                     OfflineStatusBadge(
                         status = state.rateSet.status,
                         timestampMs = state.rateSet.timestampMs,
-                        providerName = "Reference",
+                        providerName = if (state.rateSet.isReferenceOnly) {
+                            "Built-in ${StaticFallbackRateProvider.METADATA.datasetDate}"
+                        } else {
+                            "Reference"
+                        },
                         modifier = Modifier.weight(1f, fill = false)
                     )
 
                     Spacer(modifier = Modifier.width(8.dp))
 
                     val dateStr = remember(state.rateSet.timestampMs) {
-                        val sdf = SimpleDateFormat("MMM d, HH:mm", Locale.getDefault())
-                        sdf.format(Date(state.rateSet.timestampMs))
+                        // Include the year whenever it is not the current one, so old rates are never read as recent
+                        val sameYear = Calendar.getInstance().get(Calendar.YEAR) ==
+                            Calendar.getInstance().apply { timeInMillis = state.rateSet.timestampMs }.get(Calendar.YEAR)
+                        val pattern = if (sameYear) "MMM d, HH:mm" else "MMM d, yyyy"
+                        SimpleDateFormat(pattern, Locale.getDefault()).format(Date(state.rateSet.timestampMs))
                     }
                     Text(
                         text = "Updated: $dateStr",
@@ -273,6 +289,30 @@ fun CurrencyScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         softWrap = false
+                    )
+                }
+
+                if (state.showLocationPrompt) {
+                    LocalCurrencyPromptCard(
+                        onUseLocation = { requestLocalCurrency(true) },
+                        onNotNow = viewModel::dismissLocationPrompt
+                    )
+                }
+
+                // Detected country and currency (location-derived only)
+                val locationText = when {
+                    state.isLocating -> "📍 Finding your country…"
+                    state.locationLabel != null ->
+                        state.locationLabel + if (state.autoLocalCurrency) " · automatic" else ""
+                    else -> null
+                }
+                locationText?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
                     )
                 }
 
@@ -318,34 +358,14 @@ fun CurrencyScreen(
                         .weight(1f)
                 ) {
                     // Mini scrolling rail indicator on the left
-                    Box(
+                    ScrollRail(
+                        listState = lazyListState,
+                        itemCount = displayItems.size,
                         modifier = Modifier
                             .width(6.dp)
                             .fillMaxHeight()
                             .padding(vertical = 12.dp)
-                    ) {
-                        val totalItems = displayItems.size.coerceAtLeast(1)
-                        val firstVisible = lazyListState.firstVisibleItemIndex.toFloat()
-                        val scrollRatio = (firstVisible / totalItems).coerceIn(0f, 1f)
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .width(3.dp)
-                                .align(Alignment.Center)
-                                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f), RoundedCornerShape(2.dp))
-                        )
-
-                        val animatedOffset by animateFloatAsState(targetValue = scrollRatio, label = "scrollRail")
-                        Box(
-                            modifier = Modifier
-                                .fillMaxHeight(0.25f)
-                                .width(4.dp)
-                                .align(Alignment.TopCenter)
-                                .offset { IntOffset(0, (animatedOffset * 300).dp.roundToPx()) }
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.75f), RoundedCornerShape(2.dp))
-                        )
-                    }
+                    )
 
                     // Currency Cards LazyColumn
                     LazyColumn(
@@ -365,8 +385,8 @@ fun CurrencyScreen(
                                 item = item,
                                 index = index,
                                 totalItems = displayItems.size,
-                                activeCode = state.activeCurrencyCode,
-                                rateSet = state.rateSet,
+                                inputRevision = state.inputRevision,
+                                isImeVisible = isImeOpen,
                                 isDragging = isDragging,
                                 isReorderMode = state.isReorderMode,
                                 onAmountChanged = { newAmt ->
@@ -432,35 +452,11 @@ fun CurrencyScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // 📍 Location Auto-Detect Pill Button
+                        // 📍 Local currency: sets the base currency from the country the device is
+                        // in now (location permission is asked for here, on the user's tap).
                         FilledTonalButton(
-                            onClick = {
-                                val fineGranted = ContextCompat.checkSelfPermission(
-                                    context, Manifest.permission.ACCESS_FINE_LOCATION
-                                ) == PackageManager.PERMISSION_GRANTED
-                                val coarseGranted = ContextCompat.checkSelfPermission(
-                                    context, Manifest.permission.ACCESS_COARSE_LOCATION
-                                ) == PackageManager.PERMISSION_GRANTED
-
-                                if (fineGranted || coarseGranted) {
-                                    val detected = viewModel.detectAndSelectLocalCurrency(context)
-                                    coroutineScope.launch {
-                                        val idx = displayItems.indexOfFirst {
-                                            it.currency.code.equals(detected.currency.code, ignoreCase = true)
-                                        }
-                                        if (idx >= 0) {
-                                            lazyListState.animateScrollToItem(idx)
-                                        }
-                                    }
-                                } else {
-                                    locationPermissionLauncher.launch(
-                                        arrayOf(
-                                            Manifest.permission.ACCESS_FINE_LOCATION,
-                                            Manifest.permission.ACCESS_COARSE_LOCATION
-                                        )
-                                    )
-                                }
-                            },
+                            onClick = { requestLocalCurrency(false) },
+                            enabled = !state.isLocating,
                             shape = RoundedCornerShape(20.dp),
                             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
                         ) {
@@ -472,7 +468,7 @@ fun CurrencyScreen(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Use My Location",
+                                text = "Local Currency",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -577,11 +573,12 @@ fun CurrencyBoardRowOption2(
     item: CurrencyRowItem,
     index: Int,
     totalItems: Int,
-    activeCode: String,
-    rateSet: CurrencyRateSet,
+    inputRevision: Int,
+    isImeVisible: Boolean,
     isDragging: Boolean,
     isReorderMode: Boolean,
-    onAmountChanged: (String) -> Unit,
+    /** Receives typed text and returns the normalized amount the view model will convert. */
+    onAmountChanged: (String) -> String,
     onSelectAsSource: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
@@ -597,47 +594,29 @@ fun CurrencyBoardRowOption2(
     val coroutineScope = rememberCoroutineScope()
     val localFocusManager = LocalFocusManager.current
 
-    var textFieldValue by remember(item.currency.code) {
-        mutableStateOf(
-            TextFieldValue(
-                text = item.rawAmount,
-                selection = TextRange(item.rawAmount.length)
-            )
-        )
+    // Editing state of the source row. It is local so fast typing never waits for the view
+    // model round trip; every edit is replaced by the normalized amount the view model returns.
+    // Keyed on inputRevision/isSource so it restarts from the view model's amount, in the same
+    // frame, whenever that amount is set by something other than typing (becoming the source,
+    // activation resetting to "0", removal of the previous source, local detection).
+    // A zero amount starts as a placeholder that the first typed character replaces.
+    var editor by remember(item.currency.code, inputRevision, item.isSource) {
+        mutableStateOf(AmountInput.initial(item.rawAmount))
     }
 
-    var wasSource by remember(item.currency.code) { mutableStateOf(item.isSource) }
-
-    // Sync external amount changes into the text field:
-    // 1. Non-source rows mirror the calculated conversion amounts.
-    // 2. When a row transitions to source, reset text to the authoritative initial source amount ("0").
-    // 3. When source amount is cleared externally (e.g. Clear button pressed), sync the text field.
-    LaunchedEffect(item.rawAmount, item.isSource) {
-        if (!item.isSource) {
-            if (textFieldValue.text != item.rawAmount) {
-                textFieldValue = TextFieldValue(
-                    text = item.rawAmount,
-                    selection = TextRange(item.rawAmount.length)
-                )
-            }
-        } else {
-            if (!wasSource) {
-                textFieldValue = TextFieldValue(
-                    text = item.rawAmount,
-                    selection = TextRange(item.rawAmount.length)
-                )
-            } else if (textFieldValue.text != item.rawAmount && (item.rawAmount == "0" || item.rawAmount.isEmpty())) {
-                textFieldValue = TextFieldValue(
-                    text = item.rawAmount,
-                    selection = TextRange(item.rawAmount.length)
-                )
-            }
+    // Converted rows show the view model's amount directly, in the same frame as the
+    // keystroke; previously an effect copied it into local state one frame later.
+    val textFieldValue = if (item.isSource) {
+        remember(editor) {
+            TextFieldValue(text = editor.text, selection = TextRange(editor.selectionStart, editor.selectionEnd))
         }
-        wasSource = item.isSource
+    } else {
+        remember(item.rawAmount) {
+            TextFieldValue(text = item.rawAmount, selection = TextRange(item.rawAmount.length))
+        }
     }
 
     // Keep active row visible when IME appears
-    val isImeVisible = WindowInsets.isImeVisible
     LaunchedEffect(isImeVisible, item.isSource) {
         if (isImeVisible && item.isSource) {
             try {
@@ -676,6 +655,8 @@ fun CurrencyBoardRowOption2(
                 try {
                     focusRequester.requestFocus()
                 } catch (_: Exception) {}
+                // No tap on the text itself follows, so the next cursor move is a real one
+                editor = editor.copy(holdCursorAtEnd = false)
             },
         shape = RoundedCornerShape(16.dp),
         border = BorderStroke(
@@ -799,35 +780,17 @@ fun CurrencyBoardRowOption2(
 
                 Spacer(modifier = Modifier.height(2.dp))
 
-                // Small conversion relation subtitle:
-                // Formatted in small font (10.5.sp) strictly inside this left column
-                val rateSubtitle = remember(item.currency.code, activeCode, rateSet.rates, item.hasCustomOverride, item.customRate) {
-                    if (item.isSource) {
-                        "Base Input"
-                    } else if (item.hasCustomOverride && item.customRate != null) {
-                        "1 $activeCode = ${item.customRate}"
-                    } else {
-                        val fromRate = rateSet.rates[activeCode] ?: 1.0
-                        val toRate = rateSet.rates[item.currency.code] ?: 1.0
-                        if (fromRate > 0 && toRate > 0) {
-                            val ratio = toRate / fromRate
-                            val formatted = formatRatio(ratio)
-                            "1 $activeCode = $formatted ${item.currency.code}"
-                        } else {
-                            item.currency.name
-                        }
-                    }
-                }
-
+                // Small conversion relation subtitle, computed by the view model with the
+                // same rates and overrides as the amount; formatted in small font (10.5.sp)
                 Text(
-                    text = rateSubtitle,
+                    text = item.rateLabel,
                     fontSize = 10.5.sp,
                     lineHeight = 12.sp,
                     color = if (item.isSource) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
                     fontWeight = if (item.isSource) FontWeight.SemiBold else FontWeight.Normal,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    softWrap = false
+                    // Rates keep all their digits, so long ones wrap instead of being cut off
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
@@ -843,51 +806,20 @@ fun CurrencyBoardRowOption2(
                 BasicTextField(
                     value = textFieldValue,
                     onValueChange = { newTfv ->
-                        val rawText = newTfv.text
-                        val isPrevZero = textFieldValue.text.isEmpty() ||
-                            textFieldValue.text == "0" ||
-                            textFieldValue.text == "0.0" ||
-                            textFieldValue.text == "0.00"
-
-                        val sanitizedText = if (isPrevZero) {
-                            if (rawText.startsWith("0.") || rawText == "0." || rawText == ".") {
-                                "0."
-                            } else {
-                                val nonZeroDigits = rawText.filter { it in '1'..'9' }
-                                if (nonZeroDigits.isNotEmpty() && !rawText.contains('.')) {
-                                    // User typed a digit into 0 -> immediately replaces 0 with the typed digit!
-                                    // e.g. "06" -> "6", "05800" -> "5800"
-                                    rawText.trimStart('0').ifEmpty { "0" }
-                                } else if (rawText == "0" || rawText == "00") {
-                                    "0"
-                                } else {
-                                    rawText.filter { it.isDigit() || it == '.' }
-                                }
-                            }
-                        } else if (rawText.length > 1 && rawText.startsWith("0") && rawText[1] != '.') {
-                            rawText.trimStart('0').ifEmpty { "0" }
-                        } else {
-                            rawText.filter { it.isDigit() || it == '.' }
-                        }
-
-                        val textChanged = sanitizedText != textFieldValue.text
-                        val wasAtEnd = textFieldValue.selection.start >= textFieldValue.text.length
-                        val isAtEnd = newTfv.selection.start >= newTfv.text.length
-
-                        val targetCursor = rawText.take(newTfv.selection.start)
-                            .count { it.isDigit() || it == '.' }
-                            .coerceIn(0, sanitizedText.length)
-
-                        val newSelection = if (wasAtEnd || isAtEnd || isPrevZero || newTfv.selection.start >= rawText.length) {
-                            TextRange(sanitizedText.length)
-                        } else {
-                            TextRange(targetCursor)
-                        }
-
-                        textFieldValue = TextFieldValue(text = sanitizedText, selection = newSelection)
-                        if (textChanged) {
-                            onAmountChanged(sanitizedText)
-                        }
+                        // A converted row is read-only: a tap on it only reports a cursor
+                        // position, which must never reach the view model as an edit. (Its
+                        // "0.00" used to be rewritten to "0." and converted, so typing 9
+                        // after the tap gave 0.9.)
+                        if (!item.isSource || isReorderMode) return@BasicTextField
+                        // The view model converts every text change and returns the amount it
+                        // used, which the field then shows (e.g. "1.2.3" becomes "1.23")
+                        editor = AmountInput.onValueChange(
+                            current = editor,
+                            newText = newTfv.text,
+                            newSelectionStart = newTfv.selection.start,
+                            newSelectionEnd = newTfv.selection.end,
+                            normalize = onAmountChanged
+                        )
                     },
                     visualTransformation = thousandsTransformation,
                     singleLine = true,
@@ -913,6 +845,7 @@ fun CurrencyBoardRowOption2(
                     ),
                     modifier = Modifier
                         .weight(1f)
+                        .testTag("amount_${item.currency.code}")
                         .focusRequester(focusRequester)
                         .onFocusChanged { focusState ->
                             if (focusState.isFocused) {
@@ -923,11 +856,11 @@ fun CurrencyBoardRowOption2(
                                 // the card click already calls onSelectAsSource before requestFocus.
                                 if (!item.isSource) {
                                     onSelectAsSource()
+                                } else {
+                                    // A zero amount is selected so the first digit replaces it;
+                                    // any other amount gets the cursor at its end
+                                    editor = AmountInput.onFocus(editor)
                                 }
-                                // Place cursor at end for immediate typing readiness
-                                textFieldValue = textFieldValue.copy(
-                                    selection = TextRange(textFieldValue.text.length)
-                                )
                                 // BringIntoView is handled by the bringIntoViewRequester
                                 // on the Card modifier — it fires automatically when
                                 // focus is acquired and keyboard appears, providing
@@ -943,7 +876,9 @@ fun CurrencyBoardRowOption2(
                 if (item.isSource && item.rawAmount.isNotEmpty() && item.rawAmount != "0") {
                     Spacer(modifier = Modifier.width(4.dp))
                     IconButton(
-                        onClick = { onAmountChanged("0") },
+                        onClick = {
+                            editor = AmountInput.initial(onAmountChanged("0"))
+                        },
                         modifier = Modifier.size(24.dp)
                     ) {
                         Icon(
@@ -1002,6 +937,14 @@ fun AlphabeticalAddCurrencySheet(
 
     val searchFocusRequester = remember { FocusRequester() }
 
+    // The field's text lives here, updated synchronously. Feeding it from the view model's
+    // StateFlow (applied a frame later) dropped characters when typing quickly ("NGN" -> "N").
+    var searchText by remember { mutableStateOf(state.searchQuery) }
+    val onSearchTextChanged: (String) -> Unit = { query ->
+        searchText = query
+        onSearchQueryChanged(query)
+    }
+
     LaunchedEffect(Unit) {
         try {
             searchFocusRequester.requestFocus()
@@ -1040,13 +983,13 @@ fun AlphabeticalAddCurrencySheet(
 
             // Search Bar
             OutlinedTextField(
-                value = state.searchQuery,
-                onValueChange = onSearchQueryChanged,
+                value = searchText,
+                onValueChange = onSearchTextChanged,
                 placeholder = { Text("Search by currency, country, or code (e.g. KES, Kenya, EUR)...") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                trailingIcon = if (state.searchQuery.isNotEmpty()) {
+                trailingIcon = if (searchText.isNotEmpty()) {
                     {
-                        IconButton(onClick = { onSearchQueryChanged("") }) {
+                        IconButton(onClick = { onSearchTextChanged("") }) {
                             Icon(Icons.Default.Clear, contentDescription = "Clear search", modifier = Modifier.size(18.dp))
                         }
                     }
@@ -1064,8 +1007,9 @@ fun AlphabeticalAddCurrencySheet(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Location Auto-Detect Highlighted Banner (Option 3 Design)
-            val detectedLoc = state.detectedLocation ?: remember { CurrencyCatalog.detectLocalCurrency(context) }
+            // Location banner: shown only once the device location has identified a country
+            val detectedLoc = state.detectedLocation
+            if (detectedLoc != null) {
             val isLocAlreadyAdded = currentCodes.contains(detectedLoc.currency.code.uppercase())
 
             Surface(
@@ -1152,6 +1096,7 @@ fun AlphabeticalAddCurrencySheet(
             }
 
             Spacer(modifier = Modifier.height(10.dp))
+            }
 
             // Alphabetical list with A-Z jump rail
             Row(modifier = Modifier.fillMaxSize()) {
@@ -1279,28 +1224,38 @@ fun AlphabeticalAddCurrencySheet(
 }
 
 /**
- * Formats exchange ratios with adaptive decimal precision and comma grouping.
- * - e.g. 0.0071, 0.000071, 1.08, 129.50, 3,950
+ * Thin position indicator beside the currency list. It reads the scroll position itself,
+ * so scrolling recomposes only this rail rather than the whole converter screen.
  */
-private fun formatRatio(ratio: Double): String {
-    if (ratio <= 0.0) return "0.00"
-    return when {
-        ratio < 0.0001 -> {
-            val symbols = DecimalFormatSymbols.getInstance(Locale.US)
-            DecimalFormat("0.000000", symbols).format(ratio)
+@Composable
+private fun ScrollRail(
+    listState: LazyListState,
+    itemCount: Int,
+    modifier: Modifier = Modifier
+) {
+    val scrollRatio by remember(listState, itemCount) {
+        derivedStateOf {
+            (listState.firstVisibleItemIndex.toFloat() / itemCount.coerceAtLeast(1)).coerceIn(0f, 1f)
         }
-        ratio < 0.01 -> {
-            val symbols = DecimalFormatSymbols.getInstance(Locale.US)
-            DecimalFormat("0.0000", symbols).format(ratio)
-        }
-        ratio < 100.0 -> {
-            val symbols = DecimalFormatSymbols.getInstance(Locale.US)
-            DecimalFormat("#,##0.00", symbols).format(ratio)
-        }
-        else -> {
-            val symbols = DecimalFormatSymbols.getInstance(Locale.US)
-            DecimalFormat("#,##0", symbols).format(ratio)
-        }
+    }
+    val animatedOffset by animateFloatAsState(targetValue = scrollRatio, label = "scrollRail")
+
+    Box(modifier = modifier) {
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(3.dp)
+                .align(Alignment.Center)
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f), RoundedCornerShape(2.dp))
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxHeight(0.25f)
+                .width(4.dp)
+                .align(Alignment.TopCenter)
+                .offset { IntOffset(0, (animatedOffset * 300).dp.roundToPx()) }
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.75f), RoundedCornerShape(2.dp))
+        )
     }
 }
 
@@ -1373,5 +1328,40 @@ class ThousandsVisualTransformation : VisualTransformation {
         }
 
         return TransformedText(AnnotatedString(formatted), offsetMapping)
+    }
+}
+
+/** One-time explanation shown before the system location dialog. */
+@Composable
+private fun LocalCurrencyPromptCard(onUseLocation: () -> Unit, onNotNow: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Text(
+                text = "Use your local currency automatically?",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Text(
+                text = "Baziq Calculator can use your approximate location to find the country you are in and " +
+                    "set its currency as your base currency, also when you travel. Only the country is kept, " +
+                    "never your position. You can always choose currencies manually.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = onNotNow) { Text("Not now") }
+                Button(onClick = onUseLocation) { Text("Use location") }
+            }
+        }
     }
 }

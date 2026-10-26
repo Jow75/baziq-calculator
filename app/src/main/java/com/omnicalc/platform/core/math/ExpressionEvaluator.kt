@@ -26,6 +26,7 @@ class ExpressionEvaluator(
         val PHI = BigDecimal("1.6180339887498948482045868343656381")
         val PI_BD = BigDecimal("3.1415926535897932384626433832795029")
         val E_BD = BigDecimal("2.7182818284590452353602874713526625")
+        private val POSTFIX_OPERATORS = setOf("%", "!")
     }
 
     private sealed class Token {
@@ -184,8 +185,11 @@ class ExpressionEvaluator(
                     i++
                 }
                 '-' -> {
-                    // Check if unary minus
-                    val isUnary = prevToken == null || prevToken is Token.Operator || prevToken is Token.LeftParen || prevToken is Token.Function
+                    // Unary minus only where an operand is expected; after a postfix
+                    // operator ("50% - 10", "5! - 3") the minus is a binary subtraction.
+                    val isUnary = prevToken == null ||
+                        (prevToken is Token.Operator && prevToken.symbol !in POSTFIX_OPERATORS) ||
+                        prevToken is Token.LeftParen || prevToken is Token.Function || prevToken is Token.Comma
                     if (isUnary) {
                         val token = Token.Operator("neg", 3, true)
                         tokens.add(token)
@@ -264,6 +268,12 @@ class ExpressionEvaluator(
                 is Token.Number -> output.add(token)
                 is Token.Function -> opStack.push(token)
                 is Token.Operator -> {
+                    // A prefix operator has no left operand, so it must not pop pending
+                    // operators: "2^-1" keeps "^" on the stack until its right operand is complete.
+                    if (token.symbol == "neg") {
+                        opStack.push(token)
+                        continue
+                    }
                     while (opStack.isNotEmpty()) {
                         val top = opStack.peek()
                         if (top is Token.Operator) {
@@ -455,13 +465,24 @@ class ExpressionEvaluator(
 
         // Clean small floating point errors near zero (e.g. sin(180 deg))
         val cleaned = if (Math.abs(resultD) < 1e-14) 0.0 else resultD
-        return BigDecimal(cleaned, mathContext)
+        return BigDecimalMath.fromDouble(cleaned)
     }
 
-    private fun formatResult(value: BigDecimal): String {
+    /**
+     * Formats a value for the calculator display: up to 16 significant digits, with
+     * scientific notation for very large or very small magnitudes.
+     */
+    fun formatResult(value: BigDecimal): String {
         val rounded = value.round(BigDecimalMath.DISPLAY_MATH_CONTEXT)
         if (rounded.compareTo(BigDecimal.ZERO) == 0) return "0"
         val stripped = rounded.stripTrailingZeros()
+
+        // Digits before the decimal point; decide on notation before building a plain string,
+        // which for 1E+999999999 would need a billion characters.
+        val integerDigits = stripped.precision().toLong() - stripped.scale()
+        if (integerDigits > 15 || integerDigits < -8) {
+            return stripped.toEngineeringString()
+        }
         val plain = stripped.toPlainString()
 
         // If the number is huge or tiny, use scientific notation

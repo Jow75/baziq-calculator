@@ -1,16 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Baziq Calculator icon, foreground layer: four calculator keys (+ − × =), the equals key in
+    the cyan-violet-orange gradient. The 48 dp grid (30..78) keeps its rounded corners within
+    32 dp of the centre, inside the 66 dp circle that every launcher mask leaves visible.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+
+    <!-- Keys: plus, minus, multiply -->
     <path
-        android:fillColor="#38BDF8"
-        android:pathData="M35,28h38c4.4,0 8,3.6 8,8v36c0,4.4 -3.6,8 -8,8H35c-4.4,0 -8,-3.6 -8,-8V36c0,-4.4 3.6,-8 8,-8z" />
+        android:fillColor="#FF2C3B60"
+        android:pathData="M35,30h12a5,5 0,0 1,5 5v12a5,5 0,0 1,-5 5h-12a5,5 0,0 1,-5 -5v-12a5,5 0,0 1,5 -5z
+            M61,30h12a5,5 0,0 1,5 5v12a5,5 0,0 1,-5 5h-12a5,5 0,0 1,-5 -5v-12a5,5 0,0 1,5 -5z
+            M35,56h12a5,5 0,0 1,5 5v12a5,5 0,0 1,-5 5h-12a5,5 0,0 1,-5 -5v-12a5,5 0,0 1,5 -5z" />
+
+    <!-- Equals key -->
+    <path android:pathData="M61,56h12a5,5 0,0 1,5 5v12a5,5 0,0 1,-5 5h-12a5,5 0,0 1,-5 -5v-12a5,5 0,0 1,5 -5z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="56"
+                android:startY="56"
+                android:endX="78"
+                android:endY="78">
+                <item android:offset="0" android:color="#FF22D3EE" />
+                <item android:offset="0.5" android:color="#FF8B5CF6" />
+                <item android:offset="1" android:color="#FFFB923C" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Symbols -->
     <path
-        android:fillColor="#0F172A"
-        android:pathData="M33,34h42v10H33z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M35,50h8v8h-8z M49,50h8v8h-8z M63,50h8v8h-8z M35,62h8v8h-8z M49,62h8v8h-8z M63,62h8v8h-8z" />
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2.8"
+        android:strokeLineCap="round"
+        android:pathData="M36.2,41H45.8M41,36.2V45.8
+            M62.2,41H71.8
+            M37.6,63.6L44.4,70.4M44.4,63.6L37.6,70.4
+            M62.2,64.8H71.8M62.2,69.2H71.8" />
 </vector>

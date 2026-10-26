@@ -1,6 +1,7 @@
 package com.omnicalc.platform.core.math
 
 import com.omnicalc.platform.core.currency.CurrencyCatalog
+import com.omnicalc.platform.core.currency.CurrencyFormatter
 import com.omnicalc.platform.core.currency.CurrencyRateSet
 import com.omnicalc.platform.core.currency.FreshnessStatus
 import com.omnicalc.platform.core.currency.RateSource
@@ -55,10 +56,15 @@ object QuickCalculationEngine {
         """(?i)^\s*(\d[\d,]*(?:\.\d+)?)\s*(?:kg)?\s*/\s*(\d[\d,]*(?:\.\d+)?)\s*(?:m)?\s*$"""
     )
 
+    /**
+     * @param rateSet the app's current rates (downloaded or saved); when given it takes
+     *        precedence over [liveRates] and its own freshness labels describe the result.
+     */
     fun evaluateQuick(
         query: String,
         liveRates: Map<String, Double>? = null,
-        overrides: Map<String, Double>? = null
+        overrides: Map<String, Double>? = null,
+        rateSet: CurrencyRateSet? = null
     ): QuickCalculationResult? {
         val trimmed = query.trim()
         if (trimmed.isEmpty()) return null
@@ -119,7 +125,7 @@ object QuickCalculationEngine {
             val fromInfo = CurrencyCatalog.find(fromCode)
             val toInfo = CurrencyCatalog.find(toCode)
 
-            val rates = liveRates ?: staticRates.getStaticRatesMap()
+            val rates = rateSet?.rates ?: liveRates ?: staticRates.getStaticRatesMap()
             val fromRate = overrides?.get(fromCode) ?: rates[fromCode] ?: StaticFallbackRateProvider.STATIC_RATES[fromCode]
             val toRate = overrides?.get(toCode) ?: rates[toCode] ?: StaticFallbackRateProvider.STATIC_RATES[toCode]
 
@@ -127,7 +133,12 @@ object QuickCalculationEngine {
                 val converted = amount.multiply(BigDecimal(toRate.toString()))
                     .divide(BigDecimal(fromRate.toString()), 4, RoundingMode.HALF_UP)
                 val formatted = CurrencyCatalog.formatAmount(converted, toInfo)
-                val ratePair = (toRate / fromRate)
+                val fromRateBd = BigDecimal(fromRate.toString())
+                val toRateBd = BigDecimal(toRate.toString())
+                val ratePair = CurrencyFormatter.formatRate(
+                    toRateBd.divide(fromRateBd, java.math.MathContext(18, RoundingMode.HALF_EVEN)),
+                    CurrencyFormatter.rateSignificantDigits(fromRateBd, toRateBd)
+                )
 
                 val sourcesMap = mutableMapOf<String, RateSource>()
                 if (liveRates != null) {
@@ -152,12 +163,12 @@ object QuickCalculationEngine {
                     status = if (liveRates != null) FreshnessStatus.CURRENT else FreshnessStatus.OFFLINE,
                     rateSources = sourcesMap
                 )
-                val resolution = tempSet.resolveConversion(fromCode, toCode, overrides ?: emptyMap())
+                val resolution = (rateSet ?: tempSet).resolveConversion(fromCode, toCode, overrides ?: emptyMap())
 
                 return QuickCalculationResult(
                     query = trimmed,
                     primaryResult = "$formatted ${toInfo.code}",
-                    secondaryResult = "${amount.stripTrailingZeros().toPlainString()} ${fromInfo.code} = $formatted ${toInfo.code} (Rate: 1 ${fromInfo.code} ≈ ${String.format("%.4f", ratePair)} ${toInfo.code})",
+                    secondaryResult = "${amount.stripTrailingZeros().toPlainString()} ${fromInfo.code} = $formatted ${toInfo.code} (Rate: 1 ${fromInfo.code} = $ratePair ${toInfo.code})",
                     targetRoute = "currency",
                     explanation = resolution.summary
                 )
