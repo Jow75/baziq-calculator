@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="18 18 72 72" role="img" aria-label="Baziq Calculator icon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#17264A"/>
+      <stop offset="1" stop-color="#0B1430"/>
+    </linearGradient>
+    <linearGradient id="eq" gradientUnits="userSpaceOnUse" x1="56" y1="56" x2="78" y2="78">
+      <stop offset="0" stop-color="#22D3EE"/>
+      <stop offset="0.5" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#FB923C"/>
+    </linearGradient>
+  </defs>
+  <!-- Same artwork as the Android adaptive icon (108-unit canvas, visible 18..90) -->
+  <rect x="18" y="18" width="72" height="72" rx="16" fill="url(#bg)"/>
+  <g fill="#2C3B60">
+    <rect x="30" y="30" width="22" height="22" rx="5"/>
+    <rect x="56" y="30" width="22" height="22" rx="5"/>
+    <rect x="30" y="56" width="22" height="22" rx="5"/>
+  </g>
+  <rect x="56" y="56" width="22" height="22" rx="5" fill="url(#eq)"/>
+  <path fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round"
+        d="M36.2,41H45.8M41,36.2V45.8M62.2,41H71.8M37.6,63.6L44.4,70.4M44.4,63.6L37.6,70.4M62.2,64.8H71.8M62.2,69.2H71.8"/>
+</svg>

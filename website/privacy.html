@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy: Baziq Calculator</title>
+  <meta name="description" content="How Baziq Calculator for Android handles your data: what stays on your phone, which services it contacts, and how location is used.">
+  <meta name="theme-color" content="#0B1430">
+  <link rel="icon" href="assets/img/baziq-calculator-icon.svg" type="image/svg+xml">
+  <link rel="icon" href="assets/img/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/site.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="product-id" href="index.html" aria-label="Baziq Calculator home">
+        <img src="assets/img/baziq-calculator-icon.svg" alt="" width="40" height="40">
+        <span class="product-id-text">
+          <span class="product-name">Baziq Calculator</span>
+          <span class="product-by">by <span class="wordmark">Baziq <span class="wordmark-hue">Hue</span></span></span>
+        </span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">
+        <span class="sr-only">Menu</span>
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <nav id="site-nav" class="site-nav" aria-label="Main">
+        <a href="index.html#features">Features</a>
+        <a href="index.html#screenshots">Screenshots</a>
+        <a href="index.html#download">Download</a>
+        <a href="index.html#support">Support</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="page-hero">
+      <div class="container">
+        <h1>Privacy</h1>
+        <p>How Baziq Calculator for Android handles your data. Applies to version <span data-config="version">1.1.4</span>.</p>
+      </div>
+    </section>
+
+    <div class="container prose">
+      <h2>The short version</h2>
+      <p>Baziq Calculator has no account, no Baziq server, no advertising and no analytics. What you calculate and the currencies you use are stored on your phone. The app connects to the internet only to download exchange rates, and uses location only if you allow it, to find the country you are in.</p>
+
+      <h2>Stored on your phone</h2>
+      <ul>
+        <li>Calculation history and favourite tools.</li>
+        <li>Your list of currencies, its order, your base currency and any custom rates you enter.</li>
+        <li>Settings such as theme, decimal places and angle mode.</li>
+        <li>The most recently downloaded exchange rates, so the converter works offline.</li>
+        <li>If you use the automatic local currency: the two-letter code of the last country whose currency was applied (for example "KM"). Your position is not stored.</li>
+      </ul>
+      <p>This data stays in the app's private storage. It leaves the phone only if you export a backup file (Settings, Backup &amp; Restore), which is saved wherever you choose, or if you have turned on Android's own device backup, which can include app data.</p>
+
+      <h2>Exchange rates</h2>
+      <p>To refresh rates, the app downloads them from public rate services: <strong>open.er-api.com</strong> (ExchangeRate-API), and <strong>api.frankfurter.dev</strong> if the first is unavailable. The request names the base currency (for example USD). It does not include your amounts or your currency list. As with any web request, these services can see your IP address. The app refreshes automatically at most every six hours, when you open the converter, and whenever you tap refresh.</p>
+      <p>Without a connection the app uses the rates it saved last, or a built-in reference table, which it labels as such. Rates are indicative reference rates, not the rates a bank or exchange bureau will offer.</p>
+
+      <h2>Location</h2>
+      <p>Location is optional and off until you choose to use it. The app asks for <strong>approximate</strong> location only (never precise or background location), and only when you tap "Use location", the Local Currency button, or turn on the automatic setting.</p>
+      <ul>
+        <li>The app reads a recent approximate position from Android, or asks for one fresh position.</li>
+        <li>Android's geocoding service turns that position into a country. Depending on the phone, that service may send the position over the network to its provider (for example Google) to look it up.</li>
+        <li>The app keeps only the country code. The position itself is discarded.</li>
+        <li>With the automatic setting on, the country is checked at most every ten minutes, and only while you have the converter open.</li>
+      </ul>
+      <p>If you deny the permission, nothing else changes: you choose currencies by tapping them. You can withdraw the permission at any time in Android's app settings.</p>
+
+      <h2>No tracking</h2>
+      <p>The app contains no analytics, advertising, or crash-reporting libraries, and does not send usage data anywhere.</p>
+
+      <h2>This website</h2>
+      <p>This site is a static page with no cookies and no analytics. Fonts are loaded from Google Fonts. Downloads are served by GitHub.</p>
+
+      <h2>Questions</h2>
+      <p data-when-repo>Questions about privacy can be raised on <a data-link="issues" href="index.html#support">GitHub Issues</a>.</p>
+      <p data-when-no-repo>See the <a href="index.html#support">Support</a> section.</p>
+
+      <p class="small" style="color: var(--ink-faint);">Last updated: <span data-config="releaseDate">October 2026</span>.</p>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div class="footer-brand">
+        <span class="wordmark wordmark-large">Baziq <span class="wordmark-hue">Hue</span></span>
+        <p>Baziq Calculator is made by Baziq Hue.</p>
+      </div>
+      <nav class="footer-nav" aria-label="Footer">
+        <a href="index.html#features">Features</a>
+        <a href="index.html#download">Download</a>
+        <a href="index.html#support">Support</a>
+        <a href="privacy.html" aria-current="page">Privacy</a>
+        <a data-link="repo" href="index.html">Source code</a>
+      </nav>
+      <p class="footer-legal">© <span data-year>2026</span> Baziq Hue. Android is a trademark of Google LLC.</p>
+    </div>
+  </footer>
+  <script src="assets/js/site-config.js"></script>
+  <script src="assets/js/site.js"></script>
+</body>
+</html>
