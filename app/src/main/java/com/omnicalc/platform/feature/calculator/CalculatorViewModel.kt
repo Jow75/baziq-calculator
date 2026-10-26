@@ -202,16 +202,16 @@ class CalculatorViewModel(
     }
 
     fun onEquals() {
-        val current = _uiState.value
-        if (current.expression.isBlank()) return
+        if (_uiState.value.expression.isBlank()) return
+        val expression = withClosedParentheses(_uiState.value.expression)
 
-        when (val result = evaluator.evaluate(current.expression)) {
+        when (val result = evaluator.evaluate(expression)) {
             is EvalResult.Success -> {
                 viewModelScope.launch {
                     historyDao.insertHistory(
                         CalculationHistoryEntity(
                             toolId = "basic_calc",
-                            expression = current.expression,
+                            expression = expression,
                             result = result.formatted
                         )
                     )
@@ -225,13 +225,13 @@ class CalculatorViewModel(
                 }
             }
             is EvalResult.Error -> {
-                val quick = com.omnicalc.platform.core.math.QuickCalculationEngine.evaluateQuick(current.expression)
+                val quick = com.omnicalc.platform.core.math.QuickCalculationEngine.evaluateQuick(expression)
                 if (quick != null) {
                     viewModelScope.launch {
                         historyDao.insertHistory(
                             CalculationHistoryEntity(
                                 toolId = quick.targetRoute ?: "quick_calc",
-                                expression = current.expression,
+                                expression = expression,
                                 result = quick.primaryResult
                             )
                         )
@@ -308,8 +308,21 @@ class CalculatorViewModel(
         }
     }
 
-    private fun calculatePreview(expr: String): Pair<String, String?> {
-        if (expr.isBlank()) return Pair("", null)
+    /**
+     * Closes the brackets the function keys opened ("sqrt(144" -> "sqrt(144)"), as the ( ) key
+     * would; "=" used to report mismatched parentheses instead. Left alone while the expression
+     * ends where a bracket cannot close, after an operator or "(".
+     */
+    private fun withClosedParentheses(expr: String): String {
+        val missing = expr.count { it == '(' } - expr.count { it == ')' }
+        val trimmed = expr.trimEnd()
+        if (missing <= 0 || trimmed.isEmpty() || trimmed.last() == '(' || trimmed.last() in BINARY_OPERATORS) return expr
+        return trimmed + ")".repeat(missing)
+    }
+
+    private fun calculatePreview(rawExpr: String): Pair<String, String?> {
+        if (rawExpr.isBlank()) return Pair("", null)
+        val expr = withClosedParentheses(rawExpr)
         val eval = evaluator.evaluate(expr)
         if (eval is EvalResult.Success) {
             return Pair(eval.formatted, null)

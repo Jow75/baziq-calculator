@@ -182,6 +182,31 @@ class CalculatorRegressionTest {
         assertEquals("10", vm.expr)
     }
 
+    // Defect (found on the phone): √ 1 4 4 = reported "Mismatched parentheses", because the
+    // function keys open a bracket that only the ( ) key closed.
+    @Test
+    fun equalsClosesBracketsOpenedByFunctionKeys() = withViewModel { vm ->
+        vm.onScientificFunction("sqrt(")
+        vm.type("1", "4", "4")
+        assertEquals("12", vm.uiState.value.liveResult)
+        vm.type("=")
+        assertEquals("12", vm.expr)
+        assertEquals(null, vm.uiState.value.errorMessage)
+
+        vm.onClear()
+        vm.onScientificFunction("sqrt(")
+        vm.onScientificFunction("sqrt(")
+        vm.type("8", "1", "=")
+        assertEquals("3", vm.expr)
+
+        // Nothing to close yet: still reported, not guessed
+        vm.onClear()
+        vm.onScientificFunction("sqrt(")
+        vm.type("=")
+        assertEquals("sqrt(", vm.expr)
+        assertTrue(vm.uiState.value.errorMessage != null)
+    }
+
     // Defect (1.1.1 report): after a backspace onto an operator the next digit was shown
     // joined to it ("7 +3"), and a decimal point gave "7 +.".
     @Test

@@ -91,7 +91,6 @@ fun CurrencyScreen(
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
     val lazyListState = rememberLazyListState()
-    val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
 
@@ -926,7 +925,6 @@ fun AlphabeticalAddCurrencySheet(
     onCurrencySelected: (String) -> Unit,
     onAddLocationCurrency: (String) -> Unit
 ) {
-    val context = LocalContext.current
     val sheetListState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val currentCodes = remember(state.items) { state.items.map { it.currency.code.uppercase() } }
